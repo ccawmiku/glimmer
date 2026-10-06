@@ -17,7 +17,8 @@ Settings Storage::load() {
     if (err) return s;
     s.wifiSSID      = doc["wifi_ssid"]      | "";
     s.wifiPass      = doc["wifi_pass"]      | "";
-    s.claudeKey     = doc["claude_key"]     | "";
+    s.agToken       = doc["ag_token"]       | "";
+    s.agModelLabel  = doc["ag_model"]       | "Gemini";
     s.codexToken    = doc["codex_token"]    | "";
     s.codexDeviceId    = doc["codex_dev"]      | "";
     s.codexModelLabel  = doc["codex_model"]    | "";
@@ -26,7 +27,7 @@ Settings Storage::load() {
     s.brightness    = doc["brightness"]     | 80;
     s.tzOffset      = doc["tz_offset"]      | 0;
     s.tzMinutes     = doc["tz_minutes"]     | 0;
-    s.showClaude    = doc["show_claude"]    | true;
+    s.showAntigravity = doc["show_antigravity"] | true;
     s.showCodex     = doc["show_codex"]     | true;
     s.showHome      = doc["show_home"]      | true;
     s.showClock     = doc["show_clock"]     | true;
@@ -34,7 +35,7 @@ Settings Storage::load() {
     s.showAiDash    = doc["show_aidash"]    | true;
     s.showInfo      = doc["show_info"]      | true;
     s.autoRotate    = doc["auto_rotate"]    | true;
-    s.claudeWeeklyHero = doc["claude_weekly_hero"] | false;
+    s.agWeeklyHero  = doc["ag_weekly_hero"] | false;
     s.codexWeeklyHero  = doc["codex_weekly_hero"]  | false;
     s.invertDisplay = doc["invert_display"] | true;
     s.nightDim      = doc["night_dim"]      | false;
@@ -55,7 +56,8 @@ bool Storage::save(const Settings& s) {
     JsonDocument doc;
     doc["wifi_ssid"]    = s.wifiSSID;
     doc["wifi_pass"]    = s.wifiPass;
-    doc["claude_key"]   = s.claudeKey;
+    doc["ag_token"]     = s.agToken;
+    doc["ag_model"]     = s.agModelLabel;
     doc["codex_token"]  = s.codexToken;
     doc["codex_dev"]    = s.codexDeviceId;
     doc["codex_model"]  = s.codexModelLabel;
@@ -64,7 +66,7 @@ bool Storage::save(const Settings& s) {
     doc["brightness"]   = s.brightness;
     doc["tz_offset"]    = s.tzOffset;
     doc["tz_minutes"]   = s.tzMinutes;
-    doc["show_claude"]   = s.showClaude;
+    doc["show_antigravity"] = s.showAntigravity;
     doc["show_codex"]    = s.showCodex;
     doc["show_home"]     = s.showHome;
     doc["show_clock"]    = s.showClock;
@@ -72,7 +74,7 @@ bool Storage::save(const Settings& s) {
     doc["show_aidash"]   = s.showAiDash;
     doc["show_info"]     = s.showInfo;
     doc["auto_rotate"]   = s.autoRotate;
-    doc["claude_weekly_hero"] = s.claudeWeeklyHero;
+    doc["ag_weekly_hero"] = s.agWeeklyHero;
     doc["codex_weekly_hero"]  = s.codexWeeklyHero;
     doc["invert_display"]= s.invertDisplay;
     doc["night_dim"]    = s.nightDim;

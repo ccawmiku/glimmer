@@ -1,5 +1,5 @@
-// Codex — hero layout with LILAC accent.
-// v0.19: 24-h spark histogram at the bottom, driven by hourlyPct[] ring buffer.
+// Antigravity — styled identical to Codex with BLUE accent (#3B82F6) on pure black background.
+// Includes 24-h spark histogram at the bottom, driven by hourlyPct[] ring buffer.
 
 #include "channel.h"
 #include "display.h"
@@ -18,8 +18,8 @@ static char  s_secSub[24] = "";
 static int   s_sparkHour = -1;
 static int   s_loadDot = -1;
 
-bool chCodexEnabled(const ChannelCtx& ctx) {
-    return ctx.settings && ctx.settings->showCodex && !ctx.settings->codexToken.isEmpty();
+bool chAntigravityEnabled(const ChannelCtx& ctx) {
+    return ctx.settings && ctx.settings->showAntigravity && !ctx.settings->agToken.isEmpty();
 }
 
 // Human label for a rate-limit window from its length in seconds.
@@ -31,14 +31,12 @@ static void windowLabel(long sec, char* buf, size_t n) {
     else                                   buf[0] = '\0';
 }
 
-// Label for the secondary row: a per-model tag (e.g. "SPARK") if present,
-// otherwise the window length.
-static void secondaryLabel(const CodexData& d, long winSec, char* buf, size_t n) {
+static void secondaryLabel(const AntigravityData& d, long winSec, char* buf, size_t n) {
     if (d.secondaryTag[0]) { strncpy(buf, d.secondaryTag, n - 1); buf[n - 1] = '\0'; }
     else                     windowLabel(winSec, buf, n);
 }
 
-static void paintRightStack(const CodexData& d, time_t heroReset) {
+static void paintRightStack(const AntigravityData& d, time_t heroReset) {
     tft.fillRect(SCREEN_W - 110, 26, 100, 28, Theme::BG);
     if (d.creditsRemain >= 0) {
         char credits[16]; snprintf(credits, sizeof(credits), "$%.2f", d.creditsRemain);
@@ -51,7 +49,7 @@ static void paintRightStack(const CodexData& d, time_t heroReset) {
         String r = Api::formatCountdown(heroReset);
         Display::useFont("VT323-32");
         tft.setTextDatum(TR_DATUM);
-        tft.setTextColor(Theme::LILAC, Theme::BG);
+        tft.setTextColor(Theme::BLUE, Theme::BG);
         tft.drawString(r, SCREEN_W - 12, 26);
         strncpy(s_rightLine, r.c_str(), sizeof(s_rightLine) - 1);
     } else {
@@ -104,7 +102,7 @@ static void paintSecondary(float pct, time_t secReset, const char* label) {
                      pct < 0 ? 0 : pct, uc);
 }
 
-static void paintSparkBar(const CodexData& d, int curHour) {
+static void paintSparkBar(const AntigravityData& d, int curHour) {
     const int sx = 12, sy = 188, sw = SCREEN_W - 24, sh = 31;
     const int barW = sw / 24;
     tft.fillRect(sx, 174, sw, 46, Theme::BG);
@@ -122,19 +120,19 @@ static void paintSparkBar(const CodexData& d, int curHour) {
         }
         int bh = (d.hourlyPct[i] * sh) / 100;
         if (bh < 1) bh = 1;
-        uint16_t c = (i == curHour) ? Theme::LILAC : Theme::INK_DIM;
+        uint16_t c = (i == curHour) ? Theme::BLUE : Theme::INK_DIM;
         tft.fillRect(bx, sy + sh - bh, barW - 1, bh, c);
     }
     s_sparkHour = curHour;
 }
 
-void chCodexDraw(const ChannelCtx& ctx) {
+void chAntigravityDraw(const ChannelCtx& ctx) {
     Display::clear();
-    const char* cxModel = ctx.settings->codexModelLabel.length() > 0
-                        ? ctx.settings->codexModelLabel.c_str() : "";
-    Display::statusBar("Codex", cxModel, Theme::LILAC);
+    const char* agModel = ctx.settings->agModelLabel.length() > 0
+                        ? ctx.settings->agModelLabel.c_str() : "GEMINI";
+    Display::statusBar("Antigravity", agModel, Theme::BLUE);
 
-    const CodexData& d = *ctx.codex;
+    const AntigravityData& d = *ctx.antigravity;
     if (d.err[0]) {
         Display::useFont("Silkscreen-16");
         tft.setTextDatum(MC_DATUM);
@@ -152,16 +150,13 @@ void chCodexDraw(const ChannelCtx& ctx) {
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(Theme::MUTED, Theme::BG);
         tft.drawString("Loading", SCREEN_W/2, 100);
-        Display::loadingDots(SCREEN_W/2 - 21, 128, 0, Theme::LILAC);
+        Display::loadingDots(SCREEN_W/2 - 21, 128, 0, Theme::BLUE);
         s_loadDot = 0;
         return;
     }
 
-    // The weekly window is the primary now that Codex dropped the 5-hour cap.
-    // Only swap hero/secondary when there are two *real* rate-limit windows; a
-    // per-model additional limit (secondaryTag set) never takes the hero slot.
     const bool realSecondary = d.secondaryPct >= 0 && d.secondaryTag[0] == '\0';
-    const bool swapped = realSecondary && ctx.settings->codexWeeklyHero;
+    const bool swapped = realSecondary && ctx.settings->agWeeklyHero;
     const float heroPct  = swapped ? d.secondaryPct    : d.primaryPct;
     const float secPct   = swapped ? d.primaryPct      : d.secondaryPct;
     const time_t heroRst = swapped ? d.secondaryReset  : d.primaryReset;
@@ -195,28 +190,26 @@ void chCodexDraw(const ChannelCtx& ctx) {
     s_credits = d.creditsRemain;
 }
 
-void chCodexTick(const ChannelCtx& ctx) {
-    if (!ctx.codex) return;
-    const CodexData& d = *ctx.codex;
+void chAntigravityTick(const ChannelCtx& ctx) {
+    if (!ctx.antigravity) return;
+    const AntigravityData& d = *ctx.antigravity;
     if (d.err[0]) return;
     if (!d.valid) {                       // loading — sweep the chase dots
         int lit = (ctx.now_ms / 150) % 5;
         if (lit != s_loadDot) {
-            Display::loadingDots(SCREEN_W/2 - 21, 128, lit, Theme::LILAC);
+            Display::loadingDots(SCREEN_W/2 - 21, 128, lit, Theme::BLUE);
             s_loadDot = lit;
         }
         return;
     }
 
-    // formatCountdown() has minute granularity, so only re-derive (and heap-
-    // allocate) the countdown strings when the wall-clock minute rolls over.
     time_t t = time(nullptr);
     struct tm tm; localtime_r(&t, &tm);
     static int s_cdMin = -1;
     const bool minTick = (tm.tm_min != s_cdMin);
 
     const bool realSecondary = d.secondaryPct >= 0 && d.secondaryTag[0] == '\0';
-    const bool swapped = realSecondary && ctx.settings->codexWeeklyHero;
+    const bool swapped = realSecondary && ctx.settings->agWeeklyHero;
     const float heroPct  = swapped ? d.secondaryPct    : d.primaryPct;
     const float secPct   = swapped ? d.primaryPct      : d.secondaryPct;
     const time_t heroRst = swapped ? d.secondaryReset  : d.primaryReset;

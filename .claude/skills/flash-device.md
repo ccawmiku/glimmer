@@ -138,45 +138,30 @@ Both must print `[SUCCESS]`. If a build fails citing missing `tools/ttf/*.ttf`,
 the user needs to run the `regenerate-fonts` skill first. With this path, use
 the `.pio/build/nodemcuv2/` paths in the `/update` commands below.
 
-### A.6 First flash — filesystem then firmware
+### A.6 First flash — firmware then filesystem
 
-**Filesystem first** — it carries the VLW fonts. Without it, the
-firmware renders fallback glyphs.
+> [!CAUTION]
+> **CRITICAL: Firmware MUST be flashed first!**
+> NEVER flash filesystem before firmware on a stock device. Stock firmware requires its stock LittleFS contents. Flashing glimmer's filesystem image onto stock firmware causes stock firmware to panic and enter an unrecoverable bootloop (bricking OTA).
+> Flashing `firmware.bin` first allows glimmer to safely boot up, retain Wi-Fi (or open `glimmer-setup` AP), and reliably accept `littlefs.bin`.
 
 ```bash
 DEVICE_IP=<from A.4>
 # Paths assume A.5 download dir (/tmp/glimmer-flash). For a local build,
-# substitute .pio/build/nodemcuv2/littlefs.bin etc.
+# substitute .pio/build/nodemcuv2/firmware.bin etc.
 
-# 1. Filesystem
+# 1. Flash firmware FIRST
+curl -F "firmware=@firmware.bin" http://$DEVICE_IP/update
+# Device reboots into glimmer. Wait ~15s.
+
+# 2. Flash filesystem SECOND
 curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
-# Device shows "OTA UPDATE" with a coral progress bar (well, after step 2
-# completes — stock firmware doesn't show that screen yet). Wait ~15s.
-
-# 2. Firmware
-# After the FS flash the device reboots and may drop to its setup AP
-# (because /config.json was wiped). It's no longer at $DEVICE_IP.
-# We'll flash firmware via the setup AP next.
 ```
 
-**Tell the user**:
-
-> The device just rebooted. It should now broadcast a Wi-Fi AP called
-> `glimmer-setup` (open). **Join `glimmer-setup` from your laptop and
-> tell me when connected.**
-
-Wait for confirmation. Then verify:
+If the device rejoined your home Wi-Fi at `$DEVICE_IP`, step 2 will complete at `http://$DEVICE_IP/update`. If it dropped into AP mode (`glimmer-setup`), connect your laptop to `glimmer-setup` and run:
 
 ```bash
-curl -s --max-time 5 http://192.168.4.1/api/state
-```
-
-Should return JSON with `"fw":"0.1.0"` (or whatever the repo's version
-is) and `"wifi":"ap"`. If you see this, the FS flash worked.
-
-```bash
-# Now flash firmware via the setup AP
-curl -F "firmware=@firmware.bin" http://192.168.4.1/update
+curl -F "filesystem=@littlefs.bin" http://192.168.4.1/update
 ```
 
 ### A.7 First-time setup

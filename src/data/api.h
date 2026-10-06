@@ -8,15 +8,19 @@ struct ModelSlot {
     char  label[12] = "";
 };
 
-struct ClaudeData {
-    float     sessionPct   = -1.0f;
-    float     weeklyPct    = -1.0f;
-    time_t    sessionReset = 0;
-    time_t    weeklyReset  = 0;
-    ModelSlot models[3];               // top model breakdowns
-    bool      valid = false;
-    char      err[24] = "";
-    char      rawKeys[128] = "";           // debug: comma-separated API keys with utilization
+struct AntigravityData {
+    float  primaryPct     = -1.0f;
+    float  secondaryPct   = -1.0f;
+    time_t primaryReset   = 0;
+    time_t secondaryReset = 0;
+    long   primaryWinSec  = 18000;   // 5h default
+    long   secondaryWinSec = 604800; // weekly default
+    char   secondaryTag[16] = "";
+    float  creditsRemain  = -1.0f;
+    bool   valid = false;
+    char   err[24] = "";
+    uint8_t hourlyPct[24] = {};
+    bool    hourlyValid[24] = {};
 };
 
 struct CodexData {
@@ -36,23 +40,22 @@ struct CodexData {
 };
 
 // "Loading" = configured but never successfully fetched, with no error yet.
-// (Both channels are only enabled once configured, so this can't false-positive
-// on an unconfigured slot.) A recorded error takes precedence over loading.
-inline bool claudeLoading(const ClaudeData& d) { return !d.valid && !d.err[0]; }
-inline bool codexLoading (const CodexData&  d) { return !d.valid && !d.err[0]; }
+inline bool antigravityLoading(const AntigravityData& d) { return !d.valid && !d.err[0]; }
+inline bool codexLoading      (const CodexData&       d) { return !d.valid && !d.err[0]; }
 
 namespace Api {
-    // The Codex percentage to show as the hero/summary metric. The weekly
-    // (primary) window unless there are two *real* rate-limit windows and the
-    // user promoted the secondary via codexWeeklyHero. A per-model additional
-    // limit (secondaryTag set) is never treated as the hero.
+    inline float antigravityHeroPct(const Settings& s, const AntigravityData& d) {
+        bool realSecondary = d.secondaryPct >= 0 && d.secondaryTag[0] == '\0';
+        return (realSecondary && s.agWeeklyHero) ? d.secondaryPct : d.primaryPct;
+    }
+
     inline float codexHeroPct(const Settings& s, const CodexData& d) {
         bool realSecondary = d.secondaryPct >= 0 && d.secondaryTag[0] == '\0';
         return (realSecondary && s.codexWeeklyHero) ? d.secondaryPct : d.primaryPct;
     }
 
-    // Authenticates and pulls the org's usage. Updates the ClaudeData passed in.
-    bool fetchClaude(const Settings& s, ClaudeData& out);
+    // Pulls Google Antigravity retrieveUserQuotaSummary.
+    bool fetchAntigravity(const Settings& s, AntigravityData& out);
 
     // Pulls chatgpt.com/backend-api/wham/usage.
     bool fetchCodex(const Settings& s, CodexData& out);
@@ -60,8 +63,8 @@ namespace Api {
     // Helpers for displaying countdowns.
     String formatCountdown(time_t t);
 
-    // Debug telemetry from the last Claude usage fetch (surfaced in /api/state).
-    int  lastClaudeHttp();        // HTTP code (or negative HTTPClient error)
-    int  lastClaudeBodyLen();     // response body length, -1 if no 200
-    const char* lastClaudeParse(); // deserialization result ("Ok" on success)
+    // Debug telemetry from the last Antigravity usage fetch (surfaced in /api/state).
+    int  lastAgHttp();
+    int  lastAgBodyLen();
+    const char* lastAgParse();
 }

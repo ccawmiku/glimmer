@@ -6,7 +6,8 @@
 struct Settings {
     String   wifiSSID;
     String   wifiPass;
-    String   claudeKey;        // sk-ant-sid02-...
+    String   agToken;          // Antigravity refresh_token (1//...) or access_token (ya29...)
+    String   agModelLabel;     // status bar label, e.g. "Gemini"
     String   codexToken;       // Bearer
     String   codexDeviceId;    // UUID
     String   codexModelLabel;  // user-set status bar label, e.g. "GPT-5"
@@ -18,7 +19,7 @@ struct Settings {
                                      // takes precedence over tzOffset when non-zero.
                                      // Range: -720 (UTC-12:00) .. +840 (UTC+14:00).
                                      // Allows 30/45-minute timezones (India +330, Nepal +345).
-    bool     showClaude    = true;
+    bool     showAntigravity = true;
     bool     showCodex     = true;
     bool     showHome      = true;
     bool     showClock     = true;
@@ -26,7 +27,7 @@ struct Settings {
     bool     showAiDash    = true;
     bool     showInfo      = true;
     bool     autoRotate    = true;
-    bool     claudeWeeklyHero = false;
+    bool     agWeeklyHero  = false;
     bool     codexWeeklyHero  = false;
     // Display polarity for this panel — keep true for SmallTV-Ultra ST7789.
     bool     invertDisplay = true;

@@ -35,7 +35,7 @@ extern int         mainEnabledCount();
 extern int         mainTotalCount();
 extern void        mainTriggerRefresh();
 extern const char* mainEnabledChannelName(int idx);
-extern const ClaudeData* mainClaudeData();
+extern const AntigravityData* mainAntigravityData();
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -104,16 +104,16 @@ static void handleApiState() {
     d["heap"]                = ESP.getFreeHeap();
     d["maxblk"]              = ESP.getMaxFreeBlockSize();
     d["cpu_mhz"]             = ESP.getCpuFreqMHz();
-    d["claude_configured"]   = pSettings && !pSettings->claudeKey.isEmpty();
+    d["ag_configured"]       = pSettings && !pSettings->agToken.isEmpty();
     d["codex_configured"]    = pSettings && !pSettings->codexToken.isEmpty();
     d["weather_configured"]  = pSettings && (pSettings->weatherLat != 0.0f || pSettings->weatherLon != 0.0f);
-    // Diagnostics for the cold-boot Claude parse failure.
-    d["claude_http"]         = Api::lastClaudeHttp();
-    d["claude_bodylen"]      = Api::lastClaudeBodyLen();
-    d["claude_parse"]        = Api::lastClaudeParse();
-    if (const ClaudeData* cd = mainClaudeData()) {
-        d["claude_err"]      = cd->err;
-        d["claude_valid"]    = cd->valid;
+    // Diagnostics for Antigravity fetch
+    d["ag_http"]             = Api::lastAgHttp();
+    d["ag_bodylen"]          = Api::lastAgBodyLen();
+    d["ag_parse"]            = Api::lastAgParse();
+    if (const AntigravityData* ad = mainAntigravityData()) {
+        d["ag_err"]          = ad->err;
+        d["ag_valid"]        = ad->valid;
     }
     String out; serializeJson(d, out);
     server.send(200, "application/json", out);
@@ -125,7 +125,8 @@ static void handleApiGetSettings() {
     JsonDocument d;
     d["wifiSSID"]      = s.wifiSSID;
     d["wifiPass"]      = maskSecret(s.wifiPass);
-    d["claudeKey"]     = maskSecret(s.claudeKey);
+    d["agToken"]       = maskSecret(s.agToken);
+    d["agModelLabel"]  = s.agModelLabel;
     d["codexToken"]    = maskSecret(s.codexToken);
     d["codexDeviceId"]    = s.codexDeviceId;
     d["codexModelLabel"]  = s.codexModelLabel;
@@ -135,7 +136,7 @@ static void handleApiGetSettings() {
     d["brightness"]    = s.brightness;
     d["tzOffset"]      = s.tzOffset;
     d["tzMinutes"]     = s.tzMinutes;
-    d["showClaude"]    = s.showClaude;
+    d["showAntigravity"] = s.showAntigravity;
     d["showCodex"]     = s.showCodex;
     d["showWeather"]   = s.showWeather;
     d["showHome"]      = s.showHome;
@@ -144,7 +145,7 @@ static void handleApiGetSettings() {
     d["showAiDash"]    = s.showAiDash;
     d["showInfo"]      = s.showInfo;
     d["autoRotate"]    = s.autoRotate;
-    d["claudeWeeklyHero"] = s.claudeWeeklyHero;
+    d["agWeeklyHero"]  = s.agWeeklyHero;
     d["codexWeeklyHero"]  = s.codexWeeklyHero;
     d["invertDisplay"] = s.invertDisplay;
     d["nightDim"]      = s.nightDim;
@@ -169,7 +170,8 @@ static void applyIfPresent(Settings& s, JsonDocument& d) {
     };
     applyStr("wifiSSID",      s.wifiSSID);
     applyStr("wifiPass",      s.wifiPass);
-    applyStr("claudeKey",     s.claudeKey);
+    applyStr("agToken",       s.agToken);
+    applyStr("agModelLabel",  s.agModelLabel);
     applyStr("codexToken",    s.codexToken);
     applyStr("codexDeviceId",    s.codexDeviceId);
     applyStr("codexModelLabel",  s.codexModelLabel);
@@ -220,7 +222,7 @@ static void applyIfPresent(Settings& s, JsonDocument& d) {
     applyU8 ("nightStart",  s.nightStart,  0, 23);
     applyU8 ("nightEnd",    s.nightEnd,    0, 23);
     applyU8 ("nightBright", s.nightBright, 1, 100);
-    applyBool("showClaude",   s.showClaude);
+    applyBool("showAntigravity", s.showAntigravity);
     applyBool("showCodex",    s.showCodex);
     applyBool("showWeather",  s.showWeather);
     applyBool("showHome",     s.showHome);
@@ -229,7 +231,7 @@ static void applyIfPresent(Settings& s, JsonDocument& d) {
     applyBool("showAiDash",   s.showAiDash);
     applyBool("showInfo",     s.showInfo);
     applyBool("autoRotate",   s.autoRotate);
-    applyBool("claudeWeeklyHero", s.claudeWeeklyHero);
+    applyBool("agWeeklyHero",  s.agWeeklyHero);
     applyBool("codexWeeklyHero",  s.codexWeeklyHero);
     applyBool("invertDisplay",s.invertDisplay);
     applyBool("nightDim",    s.nightDim);
@@ -406,17 +408,10 @@ static void handleMcp() {
                 const char* n = mainEnabledChannelName(i);
                 if (n) ec.add(n);
             }
-            const ClaudeData* cd = mainClaudeData();
-            if (cd && cd->valid) {
-                JsonArray ma = st["claude_models"].to<JsonArray>();
-                for (int i = 0; i < 3; i++) {
-                    if (cd->models[i].label[0]) {
-                        JsonObject m = ma.add<JsonObject>();
-                        m["label"] = cd->models[i].label;
-                        m["pct"]   = (int)cd->models[i].pct;
-                    }
-                }
-                if (cd->rawKeys[0]) st["claude_raw_keys"] = cd->rawKeys;
+            const AntigravityData* ad = mainAntigravityData();
+            if (ad && ad->valid) {
+                st["antigravity_primary_pct"]   = (int)ad->primaryPct;
+                st["antigravity_secondary_pct"] = (int)ad->secondaryPct;
             }
             resp["result"]["content"][0]["type"] = "json";
         } else {

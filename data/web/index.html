@@ -62,7 +62,7 @@
       <div class="info-row"><span class="k">Signal</span><span class="v mint" x-text="state.rssi != null ? state.rssi + ' dBm' : '—'"></span></div>
       <div class="info-row"><span class="k">Uptime</span><span class="v" x-text="formatUptime(state.uptime_s)"></span></div>
       <div class="info-row"><span class="k">Free heap</span><span class="v amber" x-text="state.heap != null ? Math.round(state.heap/1024) + 'K' : '—'"></span></div>
-      <div class="info-row"><span class="k">Claude</span><span class="v" x-bind:class="state.claude_configured ? 'mint' : 'muted'" x-text="state.claude_configured ? 'configured' : 'not configured'"></span></div>
+      <div class="info-row"><span class="k">Antigravity</span><span class="v" x-bind:class="state.ag_configured ? 'sky' : 'muted'" x-text="state.ag_configured ? 'configured' : 'not configured'"></span></div>
       <div class="info-row"><span class="k">Codex</span><span class="v" x-bind:class="state.codex_configured ? 'mint' : 'muted'" x-text="state.codex_configured ? 'configured' : 'not configured'"></span></div>
       <button x-on:click="triggerRefresh()" class="secondary" style="margin-top: 12px;"
               x-bind:disabled="refreshing" x-text="refreshing ? 'Refreshing...' : 'Refresh Now'"></button>
@@ -111,13 +111,16 @@
   <!-- TOKENS -->
   <section x-show="page==='tokens'">
     <article>
-      <h2>Claude</h2>
-      <label>Session key</label>
+      <h2>Antigravity</h2>
+      <label>OAuth Refresh Token / Access Token</label>
       <div class="input-toggle" x-data="{show:false}">
-        <input x-bind:type="show ? 'text' : 'password'" x-model="settings.claudeKey" placeholder="sk-ant-sid02-...">
+        <input x-bind:type="show ? 'text' : 'password'" x-model="settings.agToken" placeholder="1//... or ya29...">
         <button type="button" class="toggle-vis" x-on:click="show=!show" x-text="show ? 'hide' : 'show'"></button>
       </div>
-      <div class="hint">claude.ai → DevTools → Application → Cookies → <code>sessionKey</code></div>
+      <div class="hint">Google OAuth token from <code>~/.gemini/antigravity-cli/antigravity-oauth-token</code>. Refresh token (<code>1//...</code>) auto-renews.</div>
+      <label>Model label</label>
+      <input x-model="settings.agModelLabel" placeholder="Gemini" maxlength="11">
+      <div class="hint">Shown in Antigravity channel status bar. Leave blank for "Gemini" (or set "3P" for Claude/GPT models).</div>
     </article>
     <article>
       <h2>Codex</h2>
@@ -145,13 +148,13 @@
       <label class="row"><input type="checkbox" x-model="settings.showClock">Clock</label>
       <label class="row"><input type="checkbox" x-model="settings.showWeather">Weather now</label>
       <label class="row"><input type="checkbox" x-model="settings.showForecast">3-day forecast</label>
-      <label class="row"><input type="checkbox" x-model="settings.showClaude">Claude usage</label>
+      <label class="row"><input type="checkbox" x-model="settings.showAntigravity">Antigravity usage</label>
       <label class="row"><input type="checkbox" x-model="settings.showCodex">Codex usage</label>
       <label class="row"><input type="checkbox" x-model="settings.showAiDash">AI dashboard</label>
       <label class="row"><input type="checkbox" x-model="settings.showInfo">Device info</label>
       <h2 style="margin-top:1em">Hero metric</h2>
-      <label class="row"><input type="checkbox" x-model="settings.claudeWeeklyHero">Claude: show weekly as hero</label>
-      <div class="hint">Claude shows the 5-hour session window as the large number by default; toggle to promote the weekly metric. Codex now reports a single weekly window (shown as the hero), with its per-model limit on the second row.</div>
+      <label class="row"><input type="checkbox" x-model="settings.agWeeklyHero">Antigravity: show weekly as hero</label>
+      <div class="hint">Antigravity shows the 5-hour limit as the large number by default; toggle to promote the weekly metric. Codex reports its primary rate limit.</div>
       <label class="row"><input type="checkbox" x-model="settings.autoRotate">Auto-rotate</label>
       <h2 style="margin-top:1em">Display</h2>
       <label class="row"><input type="checkbox" x-model="settings.invertDisplay">Invert colors (panel polarity)</label>
@@ -273,7 +276,7 @@
 x-text="curlSnippet()"></pre>
     </article>
     <article>
-      <h2>Claude Code MCP config</h2>
+      <h2>MCP Client config</h2>
       <pre style="background: var(--panel-2); padding: 10px; border-radius: 4px; font-size: 0.7rem; overflow-x: auto; color: var(--ink-dim);"
 x-text="mcpSnippet()"></pre>
     </article>

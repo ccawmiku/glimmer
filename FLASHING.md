@@ -12,8 +12,8 @@ ESP8266's tiny buffers wedges curl mid-upload over the slow AP.
 3. Download the prebuilt images (no toolchain needed):
    `curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin`
    `curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin`
-4. `curl -F "filesystem=@littlefs.bin" http://<device-ip>/update` (filesystem **first**)
-5. `curl -F "firmware=@firmware.bin"   http://<device-ip>/update`
+4. `curl -F "firmware=@firmware.bin"   http://<device-ip>/update` (firmware **first**)
+5. `curl -F "filesystem=@littlefs.bin" http://<device-ip>/update` (filesystem **second**)
 6. Device boots into glimmer's setup AP. Connect to it once to enter
    your real Wi-Fi credentials.
 
@@ -116,8 +116,11 @@ installed: `brew install platformio` (macOS) or `pip install platformio`.
 
 ## Step 4 — Flash glimmer
 
-**Order matters.** Flash filesystem FIRST so the device boots straight
-into glimmer's setup mode (where it expects glimmer's fonts on FS).
+> [!CAUTION]
+> **Order matters: ALWAYS flash firmware.bin FIRST!**
+> NEVER flash `filesystem` before `firmware` on a device running stock GeekMagic firmware (or any other non-glimmer firmware).
+> Stock firmware looks for its own files in LittleFS (`/config.json`, `/Alibaba20.vlw`). Overwriting the filesystem first causes the stock firmware to panic and crash (Exception 28 Panic / infinite bootloop), losing Wi-Fi and bricking OTA functionality!
+> Flashing `firmware.bin` first allows glimmer to boot up safely, connect to Wi-Fi (or setup AP), and smoothly receive the `littlefs.bin` upload.
 
 The commands below assume **Option A** (binaries in your current directory).
 For **Option B**, point the paths at `.pio/build/nodemcuv2/` instead.
@@ -125,11 +128,22 @@ For **Option B**, point the paths at `.pio/build/nodemcuv2/` instead.
 ```bash
 DEVICE_IP=<your device's home-LAN IP>
 
-curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
-# wait ~10 s for reboot, device drops to AP mode
+# 1. Flash firmware FIRST:
+curl -F "firmware=@firmware.bin" http://$DEVICE_IP/update
+# Wait ~15s for the device to reboot into glimmer
 
-curl -F "firmware=@firmware.bin"   http://$DEVICE_IP/update
-# OR (after device is in AP mode): http://192.168.4.1/update
+# 2. Flash filesystem SECOND:
+curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
+# Or if device dropped into AP mode: http://192.168.4.1/update
+```
+
+### Hardware Serial Flashing (TTL / Unbricking)
+
+If the device is bricked or you prefer flashing over hardware USB-TTL:
+- Connect USB-TTL: `TX -> RX`, `RX -> TX`, `GND -> GND`, `3V3/5V -> VCC`, hold `GPIO0 -> GND` during power-on to enter bootloader mode.
+- Use `esptool.py` to write both partitions at their respective flash offsets:
+```bash
+esptool.py --port <COM_PORT> --baud 460800 write_flash 0x0 firmware.bin 0x300000 littlefs.bin
 ```
 
 After both flashes complete, the device boots into glimmer.
@@ -150,7 +164,7 @@ Steps:
 3. Wi-Fi tab — enter your home Wi-Fi SSID + password. Click **Save & Restart**.
 4. Wait ~20 s. The device reboots and joins your home Wi-Fi.
 5. Find it again (`arp -an` or `http://glimmer.local/` via mDNS).
-6. Optional: enter Claude / Codex tokens, weather lat/lon, channel toggles
+6. Optional: enter Antigravity / Codex tokens, weather lat/lon, channel toggles
    on the respective tabs.
 
 ---

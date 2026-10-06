@@ -36,7 +36,7 @@ namespace Display {
     // Available VLW fonts:
     //   "VT323-86"        clock digits, hero numerics
     //   "VT323-64"        large numerics
-    //   "VT323-44"        medium numerics (Claude/Codex %)
+    //   "VT323-44"        medium numerics (Antigravity/Codex %)
     //   "VT323-32"        small numerics + retro headlines
     //   "Silkscreen-16"   status-bar titles, section labels (TITLE)
     //   "Silkscreen-12"   compact headings

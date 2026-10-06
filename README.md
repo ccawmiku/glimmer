@@ -5,7 +5,7 @@
 # glimmer
 
 > A pixel-art always-on desk widget. Custom firmware for the **GeekMagic
-> SmallTV-Ultra** that rotates through glanceable channels — Claude / Codex
+> SmallTV-Ultra** that rotates through glanceable channels — Antigravity / Codex
 > usage, clock, weather, push cards — with crisp retro typography on a
 > 240×240 panel.
 
@@ -15,13 +15,13 @@
 
 | Channel | What |
 |---|---|
-| **Home** | At-a-glance clock + weather + Claude/Codex usage meters + 24-hour timeline |
+| **Home** | At-a-glance clock + weather + Antigravity/Codex usage meters + 24-hour timeline |
 | **Clock** | Big VT323 digital clock, day-of-week, greeting |
 | **Weather Now** | Hero temp, feels/humidity/wind, 3-day mini cards |
 | **5-day Forecast** | Range-bar rows showing min/max + condition |
-| **Claude usage** | 5-hour window % + weekly % + reset countdowns |
+| **Antigravity usage**| 5-hour window % + weekly % + reset countdowns (Blue theme) |
 | **Codex usage** | Primary % + secondary % + credits/reset |
-| **AI Today** | Combined Claude+Codex card with 7-day mini chart |
+| **AI Today** | Combined Antigravity+Codex card |
 | **Info** | IP / SSID / signal / uptime / heap / CPU / firmware |
 | **Push cards** | One-shot notification cards via `POST /push` |
 
@@ -36,13 +36,13 @@ release, so you don't need PlatformIO to flash a device:
 
 ```bash
 # Grab the latest CI-built images
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin
 curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin
+curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin
 
-# Flash a freshly-stocked SmallTV-Ultra (over your home LAN). Filesystem FIRST:
+# Flash a freshly-stocked SmallTV-Ultra (over your home LAN). Firmware FIRST:
 DEVICE_IP=<find via arp or device screen>
-curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
 curl -F "firmware=@firmware.bin"   http://$DEVICE_IP/update
+curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
 
 # Device reboots into glimmer's setup AP. Connect to "glimmer-setup" Wi-Fi
 # (open, no password) and visit http://192.168.4.1/ to enter your home
@@ -87,7 +87,7 @@ restore your config.
 > 4. Download the prebuilt `firmware.bin` + `littlefs.bin` from the
 >    [`latest`](https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin)
 >    release (no toolchain needed; build locally only for unpushed changes).
-> 5. OTA-flash filesystem first, then firmware.
+> 5. OTA-flash firmware first, then filesystem.
 > 6. After full flash, restore my config from backup OR walk me
 >    through first-time setup (Wi-Fi → tokens → channels → personalization).
 >
@@ -96,8 +96,8 @@ restore your config.
 
 Claude will read the skill file, build the artifacts, and run the OTA
 dance with you. Don't run any of the curl commands yourself unless
-Claude asks — the order matters (filesystem flash wipes `/config.json`,
-needs the AP-rejoin step to recover).
+Claude asks — the order matters (always flash firmware first; filesystem
+flash wipes `/config.json`, needs the AP-rejoin step to recover).
 
 ## Hardware
 
@@ -112,7 +112,7 @@ needs the AP-rejoin step to recover).
 
 - ESP8266 BearSSL TLS is tight on heap — glimmer drops the VLW font
   cache before TLS calls (`Display::releaseFont()`). Don't add more
-  long-lived heap allocations along the Claude/Codex fetch path.
+  long-lived heap allocations along the Antigravity/Codex fetch path.
 - No PSRAM, no DMA double-buffer — channel rotation is a ~80 ms instant
   cut. Within-channel updates are region-based, smooth.
 - Display panel needs the inversion bit; the web UI exposes
@@ -158,21 +158,22 @@ implementation.
 
 ## Getting your tokens
 
-glimmer reads your usage by replaying your own browser session against the
-same private endpoints claude.ai and chatgpt.com use for their dashboards.
-You extract each credential from your browser's DevTools, then **set it on
+glimmer reads your usage by querying the Antigravity user quota API and
+chatgpt.com wham usage API.
+You extract each credential from your local config or browser's DevTools, then **set it on
 the Tokens page in the device web UI** — open `http://glimmer.local/` (or
 `http://192.168.4.1/` while the device is in setup-AP mode) and go to
 **Settings → Tokens**.
 
-### Claude — `sessionKey` cookie
+### Antigravity — Google OAuth Refresh Token
 
 **Get it:**
+Locate your local Antigravity OAuth token at:
+`~/.gemini/antigravity-cli/antigravity-oauth-token`
+Copy the `refresh_token` (`1//...`) or direct `access_token` (`ya29...`).
 
-1. Open DevTools on `claude.ai` → **Application → Cookies → `https://claude.ai`**
-2. Copy the value of the `sessionKey` cookie (starts with `sk-ant-sid02-…`)
-
-**Set it:** paste it on the Tokens page under **Claude → Session key**.
+**Set it:**
+Paste it on the Tokens page under **Antigravity → OAuth Refresh Token**. Glimmer will automatically exchange the refresh token with Google OAuth and keep it renewed!
 
 ### Codex — Bearer token + device ID
 
@@ -195,21 +196,17 @@ and **Device ID**.
 > pushes them to the device for you (`POST /api/settings`).
 
 > **Note:** the Codex bearer token is short-lived (~24 h). When the Codex
-> channel shows a `401`, repeat these steps with a fresh request. The Claude
-> `sessionKey` lasts much longer but eventually needs the same refresh.
+> channel shows a `401`, repeat these steps with a fresh request. The Antigravity
+> Google OAuth refresh token automatically renews its access token.
 
 ## Disclaimer — personal & educational use only
 
 glimmer is shared for **personal experimentation and educational
 purposes**.
 
-It reads your own Claude and Codex usage by sending **your own
-credentials** (a `sessionKey` cookie for claude.ai, a Bearer token for
-chatgpt.com) to internal endpoints those services use to power their
-web UIs. **These endpoints are undocumented and are not part of either
-provider's public API.** They can change or be removed without notice,
-and accessing them programmatically may be inconsistent with
-Anthropic's or OpenAI's Terms of Service depending on interpretation.
+It reads your own Antigravity and Codex usage by sending **your own
+credentials** to endpoints used to power usage statistics.
+**These endpoints may change without notice.**
 
 By installing or modifying this firmware you accept full responsibility
 for:

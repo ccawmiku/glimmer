@@ -407,11 +407,11 @@ void Display::loadingDots(int x, int y, int litIndex, uint16_t accent, int count
 // used most) but declared in theme.h so other modules can call it.
 uint16_t Theme::channelColor(const char* name) {
     if (!name) return MUTED;
-    if (!strcmp(name, "Claude"))  return CORAL;
-    if (!strcmp(name, "Codex"))   return LILAC;
-    if (!strcmp(name, "Weather")) return SKY;
-    if (!strcmp(name, "Clock"))   return AMBER;
-    if (!strcmp(name, "Info"))    return MINT;
-    if (!strcmp(name, "Push"))    return CORAL;  // overridden per-card
+    if (!strcmp(name, "Antigravity")) return BLUE;
+    if (!strcmp(name, "Codex"))       return LILAC;
+    if (!strcmp(name, "Weather"))     return SKY;
+    if (!strcmp(name, "Clock"))       return AMBER;
+    if (!strcmp(name, "Info"))        return MINT;
+    if (!strcmp(name, "Push"))        return BLUE;  // overridden per-card
     return MUTED;
 }

@@ -5,10 +5,10 @@
 
 // Context passed to every channel render.
 struct ChannelCtx {
-    const Settings*   settings;
-    const ClaudeData* claude;
-    const CodexData*  codex;
-    uint32_t          now_ms;     // millis() at draw time
+    const Settings*        settings;
+    const AntigravityData* antigravity;
+    const CodexData*       codex;
+    uint32_t               now_ms;     // millis() at draw time
 };
 
 // A channel = name + enabled-predicate + full-draw + optional tick.

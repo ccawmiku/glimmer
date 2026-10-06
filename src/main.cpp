@@ -2,7 +2,7 @@
 //
 // Architecture:
 //   core/    hardware + I/O (display, wifi, time, storage, web, OTA)
-//   data/    external API clients (claude, codex, ...)
+//   data/    external API clients (antigravity, codex, ...)
 //   channels/ self-contained renderers, registered in kChannels[]
 //
 // Adding a channel = drop one .cpp into src/channels/ + add a row to kChannels[].
@@ -22,7 +22,7 @@
 #include "mood.h"
 
 // ── Channel registry — declared in their own .cpp files ─────────────────────
-extern bool chClaudeEnabled(const ChannelCtx&);  extern void chClaudeDraw(const ChannelCtx&);
+extern bool chAntigravityEnabled(const ChannelCtx&); extern void chAntigravityDraw(const ChannelCtx&);
 extern bool chCodexEnabled (const ChannelCtx&);  extern void chCodexDraw (const ChannelCtx&);
 extern bool chClockEnabled (const ChannelCtx&);  extern void chClockDraw (const ChannelCtx&);
 extern bool chInfoEnabled  (const ChannelCtx&);  extern void chInfoDraw  (const ChannelCtx&);
@@ -34,7 +34,7 @@ extern bool chForecastEnabled(const ChannelCtx&); extern void chForecastDraw(con
 extern void chPushTick       (const ChannelCtx&);
 extern void chClockTick      (const ChannelCtx&);
 extern void chHomeTick       (const ChannelCtx&);
-extern void chClaudeTick     (const ChannelCtx&);
+extern void chAntigravityTick(const ChannelCtx&);
 extern void chCodexTick      (const ChannelCtx&);
 extern void chAiDashTick     (const ChannelCtx&);
 extern void chWeatherTick    (const ChannelCtx&);
@@ -43,25 +43,25 @@ extern void chInfoTick       (const ChannelCtx&);
 extern void weatherTick      (const Settings&);
 
 static const Channel kChannels[] = {
-    //  name        enabled              draw                  tick
-    { "Push",     chPushEnabled,     chPushDraw,     chPushTick     },
-    { "Home",     chHomeEnabled,     chHomeDraw,     chHomeTick     },
-    { "Claude",   chClaudeEnabled,   chClaudeDraw,   chClaudeTick   },
-    { "Codex",    chCodexEnabled,    chCodexDraw,    chCodexTick    },
-    { "AI",       chAiDashEnabled,   chAiDashDraw,   chAiDashTick   },
-    { "Weather",  chWeatherEnabled,  chWeatherDraw,  chWeatherTick  },
-    { "Forecast", chForecastEnabled, chForecastDraw, chForecastTick },
-    { "Clock",    chClockEnabled,    chClockDraw,    chClockTick    },
-    { "Info",     chInfoEnabled,     chInfoDraw,     chInfoTick     },
+    //  name           enabled                 draw                     tick
+    { "Push",        chPushEnabled,        chPushDraw,        chPushTick        },
+    { "Home",        chHomeEnabled,        chHomeDraw,        chHomeTick        },
+    { "Antigravity", chAntigravityEnabled, chAntigravityDraw, chAntigravityTick },
+    { "Codex",       chCodexEnabled,       chCodexDraw,       chCodexTick       },
+    { "AI",          chAiDashEnabled,      chAiDashDraw,      chAiDashTick      },
+    { "Weather",     chWeatherEnabled,     chWeatherDraw,     chWeatherTick     },
+    { "Forecast",    chForecastEnabled,    chForecastDraw,    chForecastTick    },
+    { "Clock",       chClockEnabled,       chClockDraw,       chClockTick       },
+    { "Info",        chInfoEnabled,        chInfoDraw,        chInfoTick        },
 };
 static constexpr int kChannelCount = sizeof(kChannels) / sizeof(kChannels[0]);
 
 // ── Globals ──────────────────────────────────────────────────────────────────
 
-static Settings    g_settings;
-static bool        g_apMode      = false;
-static ClaudeData  g_claude;
-static CodexData   g_codex;
+static Settings        g_settings;
+static bool            g_apMode      = false;
+static AntigravityData g_antigravity;
+static CodexData       g_codex;
 
 static int         g_activeIdx[8];        // indices into kChannels[] that are currently enabled
 static int         g_activeCount = 0;
@@ -86,12 +86,12 @@ const char* mainEnabledChannelName(int idx) {
     if (idx < 0 || idx >= g_activeCount) return nullptr;
     return kChannels[g_activeIdx[idx]].name;
 }
-const ClaudeData* mainClaudeData() { return &g_claude; }
+const AntigravityData* mainAntigravityData() { return &g_antigravity; }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 static ChannelCtx makeCtx() {
-    return ChannelCtx { &g_settings, &g_claude, &g_codex, millis() };
+    return ChannelCtx { &g_settings, &g_antigravity, &g_codex, millis() };
 }
 
 static void recomputeActive() {
@@ -192,8 +192,8 @@ static void apiYieldGap() { yield(); delay(150); }
 
 static void refreshAll() {
     if (WiFi.status() != WL_CONNECTED) return;
-    if (!g_settings.claudeKey.isEmpty()) {
-        Api::fetchClaude(g_settings, g_claude);
+    if (!g_settings.agToken.isEmpty()) {
+        Api::fetchAntigravity(g_settings, g_antigravity);
         apiYieldGap();
     }
     if (!g_settings.codexToken.isEmpty()) {

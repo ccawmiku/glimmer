@@ -20,11 +20,12 @@ namespace Theme {
     constexpr uint16_t MUTED    = 0x8BF2;  // #8A7F96
 
     // ── Accents — saturated so they punch on the warm-dark surface ──
-    constexpr uint16_t CORAL    = 0xFA89;  // #FF5247  Claude
+    constexpr uint16_t CORAL    = 0xFA89;  // #FF5247
     constexpr uint16_t AMBER    = 0xFE88;  // #FFD23F  Clock
     constexpr uint16_t MINT     = 0x8F2E;  // #8FE574  Info / OK
     constexpr uint16_t SKY      = 0x55BF;  // #54B6FF  Weather
     constexpr uint16_t LILAC    = 0xC43F;  // #C385FF  Codex
+    constexpr uint16_t BLUE     = 0x3C1E;  // #3B82F6  Antigravity
     // Theme color for a named channel — used by the channel indicator strip.
     uint16_t channelColor(const char* name);
 }

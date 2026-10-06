@@ -31,7 +31,7 @@ extern WeatherData* weatherSnapshotPtr();
 
 // ── File-static cache so tick() can diff vs last paint ──
 static int     s_hh = -1, s_mm = -1, s_dayHour = -1;
-static float   s_cl = -2.f, s_cx = -2.f;
+static float   s_ag = -2.f, s_cx = -2.f;
 static int     s_loadDot = -1;
 static float   s_tempC = -999.f;
 static uint8_t s_code = 255;
@@ -157,13 +157,13 @@ static void paintMeterLoading(int y, const char* tag, uint16_t tagColor,
     Display::loadingDots(SCREEN_W - 10 - 24, y + 4, lit, accent, 3);
 }
 
-static void paintCL(float cl, bool loading, int lit) {
-    if (loading) { paintMeterLoading(114, "CL", Theme::CORAL, lit, Theme::CORAL); return; }
+static void paintAG(float ag, bool loading, int lit) {
+    if (loading) { paintMeterLoading(114, "AG", Theme::BLUE, lit, Theme::BLUE); return; }
     char buf[8];
-    if (cl >= 0) snprintf(buf, sizeof(buf), "%.0f%%", cl);
+    if (ag >= 0) snprintf(buf, sizeof(buf), "%.0f%%", ag);
     else         snprintf(buf, sizeof(buf), "--");
-    paintMeter(114, "CL", Theme::CORAL, cl < 0 ? 0 : cl,
-               Display::usageColor(cl), buf);
+    paintMeter(114, "AG", Theme::BLUE, ag < 0 ? 0 : ag,
+               Display::usageColor(ag), buf);
 }
 
 static void paintCX(float cx, bool loading, int lit) {
@@ -241,14 +241,14 @@ void chHomeDraw(const ChannelCtx& ctx) {
 
     // AI meters — "loading" only for a *configured* side (an unconfigured slot
     // stays valid=false/err="" and must read as "--", not a perpetual loader).
-    const bool clLoading = ctx.claude && !ctx.settings->claudeKey.isEmpty()   && claudeLoading(*ctx.claude);
-    const bool cxLoading = ctx.codex  && !ctx.settings->codexToken.isEmpty()  && codexLoading(*ctx.codex);
-    float cl = ctx.claude ? (ctx.settings->claudeWeeklyHero ? ctx.claude->weeklyPct : ctx.claude->sessionPct) : -1.f;
-    float cx = ctx.codex  ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
+    const bool agLoading = ctx.antigravity && !ctx.settings->agToken.isEmpty()   && antigravityLoading(*ctx.antigravity);
+    const bool cxLoading = ctx.codex       && !ctx.settings->codexToken.isEmpty() && codexLoading(*ctx.codex);
+    float ag = ctx.antigravity ? Api::antigravityHeroPct(*ctx.settings, *ctx.antigravity) : -1.f;
+    float cx = ctx.codex       ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
     const int lit = (ctx.now_ms / 150) % 3;
-    paintCL(cl, clLoading, lit);
+    paintAG(ag, agLoading, lit);
     paintCX(cx, cxLoading, lit);
-    s_loadDot = (clLoading || cxLoading) ? lit : -1;
+    s_loadDot = (agLoading || cxLoading) ? lit : -1;
 
     Display::dotsDivider(10, 152, SCREEN_W - 20);
 
@@ -269,7 +269,7 @@ void chHomeDraw(const ChannelCtx& ctx) {
 
     // ── Seed cache ──
     s_hh = tmv.tm_hour; s_mm = tmv.tm_min; s_dayHour = tmv.tm_hour;
-    s_cl = (cl < 0) ? -2.f : cl;
+    s_ag = (ag < 0) ? -2.f : ag;
     s_cx = (cx < 0) ? -2.f : cx;
     if (w && w->valid) { s_tempC = w->tempC; s_code = w->code; }
     else               { s_tempC = -999.f; s_code = 255; }
@@ -307,18 +307,18 @@ void chHomeTick(const ChannelCtx& ctx) {
 
     // AI meters — chase dots while a side is still loading; else hysteresis on
     // ±0.4% so noise doesn't thrash.
-    const bool clLoading = ctx.claude && !ctx.settings->claudeKey.isEmpty()  && claudeLoading(*ctx.claude);
-    const bool cxLoading = ctx.codex  && !ctx.settings->codexToken.isEmpty() && codexLoading(*ctx.codex);
-    const float cl = ctx.claude ? (ctx.settings->claudeWeeklyHero ? ctx.claude->weeklyPct : ctx.claude->sessionPct) : -1.f;
-    const float cx = ctx.codex  ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
+    const bool agLoading = ctx.antigravity && !ctx.settings->agToken.isEmpty()  && antigravityLoading(*ctx.antigravity);
+    const bool cxLoading = ctx.codex       && !ctx.settings->codexToken.isEmpty() && codexLoading(*ctx.codex);
+    const float ag = ctx.antigravity ? Api::antigravityHeroPct(*ctx.settings, *ctx.antigravity) : -1.f;
+    const float cx = ctx.codex       ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
     const int lit = (ctx.now_ms / 150) % 3;
 
-    if (clLoading) {
-        if (lit != s_loadDot) paintCL(cl, true, lit);
-        s_cl = -2.f;                                  // force repaint when data lands
+    if (agLoading) {
+        if (lit != s_loadDot) paintAG(ag, true, lit);
+        s_ag = -2.f;                                  // force repaint when data lands
     } else {
-        float cl_eff = (cl < 0) ? -2.f : cl;
-        if (fabsf(cl_eff - s_cl) > 0.4f) { paintCL(cl, false, lit); s_cl = cl_eff; }
+        float ag_eff = (ag < 0) ? -2.f : ag;
+        if (fabsf(ag_eff - s_ag) > 0.4f) { paintAG(ag, false, lit); s_ag = ag_eff; }
     }
     if (cxLoading) {
         if (lit != s_loadDot) paintCX(cx, true, lit);
@@ -327,5 +327,5 @@ void chHomeTick(const ChannelCtx& ctx) {
         float cx_eff = (cx < 0) ? -2.f : cx;
         if (fabsf(cx_eff - s_cx) > 0.4f) { paintCX(cx, false, lit); s_cx = cx_eff; }
     }
-    if (clLoading || cxLoading) s_loadDot = lit;
+    if (agLoading || cxLoading) s_loadDot = lit;
 }

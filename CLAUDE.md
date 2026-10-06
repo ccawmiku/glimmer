@@ -65,7 +65,7 @@ must be exactly `firmware` or `filesystem` (handled by
    whatever font was loaded last — or the built-in GLCD 5×7 if
    nothing was. This bug ate days during development.
 4. **Heap**: `Display::releaseFont()` frees the VLW cache before TLS
-   calls (claude.ai handshake needs ~25 KB peak).
+   calls (BearSSL handshake needs ~25 KB peak).
 
 ## VLW file format (verified against TFT_eSPI Smooth_font.cpp)
 

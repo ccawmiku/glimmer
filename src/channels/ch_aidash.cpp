@@ -1,8 +1,8 @@
-// AI Dashboard — combined Claude+Codex glance.
+// AI Dashboard — combined Antigravity+Codex glance.
 //
 // Layout:
 //   - StatusBar "AI today" with total credits right
-//   - Two big % side-by-side (CLAUDE coral, CODEX lilac)
+//   - Two big % side-by-side (ANTIGRAVITY blue, CODEX lilac)
 //   - PixelBars stacked
 //   - Reset countdown rows (real data from API)
 
@@ -15,33 +15,33 @@
 #include <time.h>
 
 // tick cache
-static float s_cl = -2.f, s_cx = -2.f;
+static float s_ag = -2.f, s_cx = -2.f;
 static float s_credits = -2.f;
-static char  s_clReset[12] = "";
+static char  s_agReset[12] = "";
 static char  s_cxReset[12] = "";
 static int   s_loadDot = -1;
 
 bool chAiDashEnabled(const ChannelCtx& ctx) {
     return ctx.settings && ctx.settings->showAiDash
-        && !ctx.settings->claudeKey.isEmpty()
+        && !ctx.settings->agToken.isEmpty()
         && !ctx.settings->codexToken.isEmpty();
 }
 
-static void paintCLBlock(float cl, bool loading, int lit) {
-    uint16_t uc = Display::usageColor(cl);
+static void paintAGBlock(float ag, bool loading, int lit) {
+    uint16_t uc = Display::usageColor(ag);
     tft.fillRect(10, 48, 100, 28, Theme::BG);
     if (loading) {
-        Display::loadingDots(14, 58, lit, Theme::CORAL, 3);
+        Display::loadingDots(14, 58, lit, Theme::BLUE, 3);
     } else {
         char buf[8];
-        if (cl < 0) snprintf(buf, sizeof(buf), "--%%");
-        else        snprintf(buf, sizeof(buf), "%.0f%%", cl);
+        if (ag < 0) snprintf(buf, sizeof(buf), "--%%");
+        else        snprintf(buf, sizeof(buf), "%.0f%%", ag);
         Display::useFont("VT323-32");
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(uc, Theme::BG);
         tft.drawString(buf, 12, 50);
     }
-    Display::pixelBar(12, 92, SCREEN_W - 24, 10, (loading || cl < 0) ? 0 : cl, uc);
+    Display::pixelBar(12, 92, SCREEN_W - 24, 10, (loading || ag < 0) ? 0 : ag, uc);
 }
 
 static void paintCXBlock(float cx, bool loading, int lit) {
@@ -84,26 +84,26 @@ void chAiDashDraw(const ChannelCtx& ctx) {
     if (credits >= 0) snprintf(rmeta, sizeof(rmeta), "$%.2f", credits);
     Display::statusBar("AI today", rmeta, Theme::INK_DIM);
 
-    const float cl = ctx.claude ? (ctx.settings->claudeWeeklyHero ? ctx.claude->weeklyPct : ctx.claude->sessionPct) : -1;
-    const float cx = ctx.codex  ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1;
+    const float ag = ctx.antigravity ? Api::antigravityHeroPct(*ctx.settings, *ctx.antigravity) : -1;
+    const float cx = ctx.codex       ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1;
 
     // ── Two big numbers side by side, design-true VLW typography ──
     Display::useFont("Silkscreen-12");
     tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(Theme::CORAL, Theme::BG);
-    tft.drawString("CLAUDE", 12, 32);
+    tft.setTextColor(Theme::BLUE, Theme::BG);
+    tft.drawString("ANTIGRAVITY", 12, 32);
 
     tft.setTextDatum(TR_DATUM);
     tft.setTextColor(Theme::LILAC, Theme::BG);
     tft.drawString("CODEX", SCREEN_W - 12, 32);
 
     // Hero %s + segmented bars (via helpers so tick can reuse)
-    const bool clLoading = ctx.claude && claudeLoading(*ctx.claude);
-    const bool cxLoading = ctx.codex  && codexLoading(*ctx.codex);
+    const bool agLoading = ctx.antigravity && antigravityLoading(*ctx.antigravity);
+    const bool cxLoading = ctx.codex       && codexLoading(*ctx.codex);
     const int lit = (ctx.now_ms / 150) % 3;
-    paintCLBlock(cl, clLoading, lit);
+    paintAGBlock(ag, agLoading, lit);
     paintCXBlock(cx, cxLoading, lit);
-    s_loadDot = (clLoading || cxLoading) ? lit : -1;
+    s_loadDot = (agLoading || cxLoading) ? lit : -1;
 
     Display::dotsDivider(12, 130, SCREEN_W - 24);
 
@@ -113,32 +113,32 @@ void chAiDashDraw(const ChannelCtx& ctx) {
     tft.setTextColor(Theme::MUTED, Theme::BG);
     tft.drawString("RESETS", 12, 138);
 
-    time_t clReset = ctx.claude ? ctx.claude->sessionReset : 0;
-    time_t cxReset = ctx.codex  ? ctx.codex->primaryReset  : 0;
-    paintResetRow(158, "CL", Theme::CORAL, clReset);
+    time_t agReset = ctx.antigravity ? ((ctx.settings && ctx.settings->agWeeklyHero) ? ctx.antigravity->secondaryReset : ctx.antigravity->primaryReset) : 0;
+    time_t cxReset = ctx.codex       ? ctx.codex->primaryReset : 0;
+    paintResetRow(158, "AG", Theme::BLUE, agReset);
     paintResetRow(174, "CX", Theme::LILAC, cxReset);
 
     // Seed cache
-    s_cl = (cl < 0) ? -2.f : cl;
+    s_ag = (ag < 0) ? -2.f : ag;
     s_cx = (cx < 0) ? -2.f : cx;
     s_credits = credits;
-    strncpy(s_clReset, Api::formatCountdown(clReset).c_str(), sizeof(s_clReset) - 1);
+    strncpy(s_agReset, Api::formatCountdown(agReset).c_str(), sizeof(s_agReset) - 1);
     strncpy(s_cxReset, Api::formatCountdown(cxReset).c_str(), sizeof(s_cxReset) - 1);
 }
 
 void chAiDashTick(const ChannelCtx& ctx) {
-    const bool clLoading = ctx.claude && claudeLoading(*ctx.claude);
-    const bool cxLoading = ctx.codex  && codexLoading(*ctx.codex);
-    const float cl = ctx.claude ? (ctx.settings->claudeWeeklyHero ? ctx.claude->weeklyPct : ctx.claude->sessionPct) : -1.f;
-    const float cx = ctx.codex  ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
+    const bool agLoading = ctx.antigravity && antigravityLoading(*ctx.antigravity);
+    const bool cxLoading = ctx.codex       && codexLoading(*ctx.codex);
+    const float ag = ctx.antigravity ? Api::antigravityHeroPct(*ctx.settings, *ctx.antigravity) : -1.f;
+    const float cx = ctx.codex       ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
     const int lit = (ctx.now_ms / 150) % 3;
 
-    if (clLoading) {
-        if (lit != s_loadDot) paintCLBlock(cl, true, lit);
-        s_cl = -2.f;                                  // force repaint when data lands
+    if (agLoading) {
+        if (lit != s_loadDot) paintAGBlock(ag, true, lit);
+        s_ag = -2.f;                                  // force repaint when data lands
     } else {
-        float cl_eff = (cl < 0) ? -2.f : cl;
-        if (fabsf(cl_eff - s_cl) > 0.4f) { paintCLBlock(cl, false, lit); s_cl = cl_eff; }
+        float ag_eff = (ag < 0) ? -2.f : ag;
+        if (fabsf(ag_eff - s_ag) > 0.4f) { paintAGBlock(ag, false, lit); s_ag = ag_eff; }
     }
     if (cxLoading) {
         if (lit != s_loadDot) paintCXBlock(cx, true, lit);
@@ -147,7 +147,7 @@ void chAiDashTick(const ChannelCtx& ctx) {
         float cx_eff = (cx < 0) ? -2.f : cx;
         if (fabsf(cx_eff - s_cx) > 0.4f) { paintCXBlock(cx, false, lit); s_cx = cx_eff; }
     }
-    if (clLoading || cxLoading) s_loadDot = lit;
+    if (agLoading || cxLoading) s_loadDot = lit;
 
     // Credits — repaint just the right meta in the status bar
     const float credits = ctx.codex && ctx.codex->creditsRemain >= 0 ? ctx.codex->creditsRemain : -1.f;
@@ -170,13 +170,13 @@ void chAiDashTick(const ChannelCtx& ctx) {
     static int s_cdMin = -1;
     if (tm.tm_min != s_cdMin) {
         s_cdMin = tm.tm_min;
-        time_t clReset = ctx.claude ? ctx.claude->sessionReset : 0;
-        time_t cxReset = ctx.codex  ? ctx.codex->primaryReset  : 0;
-        String clFresh = Api::formatCountdown(clReset);
+        time_t agReset = ctx.antigravity ? ((ctx.settings && ctx.settings->agWeeklyHero) ? ctx.antigravity->secondaryReset : ctx.antigravity->primaryReset) : 0;
+        time_t cxReset = ctx.codex       ? ctx.codex->primaryReset : 0;
+        String agFresh = Api::formatCountdown(agReset);
         String cxFresh = Api::formatCountdown(cxReset);
-        if (strcmp(clFresh.c_str(), s_clReset) != 0) {
-            paintResetRow(158, "CL", Theme::CORAL, clReset);
-            strncpy(s_clReset, clFresh.c_str(), sizeof(s_clReset) - 1);
+        if (strcmp(agFresh.c_str(), s_agReset) != 0) {
+            paintResetRow(158, "AG", Theme::BLUE, agReset);
+            strncpy(s_agReset, agFresh.c_str(), sizeof(s_agReset) - 1);
         }
         if (strcmp(cxFresh.c_str(), s_cxReset) != 0) {
             paintResetRow(174, "CX", Theme::LILAC, cxReset);
