@@ -1,30 +1,10 @@
 #include "api.h"
 #include "display.h"
+#include "usage_parse.h"
+#include "timeutil.h"
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecureBearSSL.h>
-#include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
-
-// ── time parsing ─────────────────────────────────────────────────────────────
-
-static time_t parseISO8601(const char* s) {
-    if (!s || strlen(s) < 19) return 0;
-    struct tm t = {};
-    if (sscanf(s, "%d-%d-%dT%d:%d:%d",
-               &t.tm_year, &t.tm_mon, &t.tm_mday,
-               &t.tm_hour, &t.tm_min, &t.tm_sec) < 6) return 0;
-    t.tm_year -= 1900;
-    t.tm_mon  -= 1;
-    // The API returns UTC timestamps. mktime uses local TZ, so temporarily
-    // force UTC, parse, then restore.
-    char* prev = getenv("TZ");
-    String backup = prev ? prev : "";
-    setenv("TZ", "UTC0", 1); tzset();
-    time_t r = mktime(&t);
-    if (backup.length()) setenv("TZ", backup.c_str(), 1); else unsetenv("TZ");
-    tzset();
-    return r;
-}
 
 String Api::formatCountdown(time_t t) {
     time_t now = time(nullptr);
@@ -33,100 +13,198 @@ String Api::formatCountdown(time_t t) {
     if (diff <= 0) return "now";
     long h = diff / 3600;
     long m = (diff % 3600) / 60;
-    if (h >= 24) { char b[8]; snprintf(b, sizeof(b), "%ldd", (h + 12) / 24); return b; }
-    if (h >= 1)  { char b[10]; snprintf(b, sizeof(b), "%ldh %ldm", h, m);   return b; }
-    char b[8]; snprintf(b, sizeof(b), "%ldm", m); return b;
+    if (h >= 24) { char b[8]; snprintf_P(b, sizeof(b), PSTR("%ldd"), (h + 12) / 24); return b; }
+    if (h >= 1)  { char b[10]; snprintf_P(b, sizeof(b), PSTR("%ldh %ldm"), h, m);   return b; }
+    char b[8]; snprintf_P(b, sizeof(b), PSTR("%ldm"), m); return b;
+}
+
+bool Api::isStale(time_t lastOk, const Settings& s) {
+    time_t now = time(nullptr);
+    if (lastOk <= 0 || now < 1000000000L) return false;
+    long limit = (long)s.refreshMin * 60L * 3L;
+    if (limit < 15L * 60L) limit = 15L * 60L;
+    return (long)(now - lastOk) > limit;
+}
+
+void Api::staleText(time_t lastOk, const Settings& s, char* buf, size_t n) {
+    if (!isStale(lastOk, s)) { if (n) buf[0] = '\0'; return; }
+    char d[8]; TimeUtil::shortDuration((long)(time(nullptr) - lastOk), d, sizeof(d));
+    snprintf_P(buf, n, PSTR("STALE %s"), d);
+}
+
+static const char* provName(bool isAg, bool token) {
+    return isAg ? (token ? "ANTIGRAVITY TOKEN" : "ANTIGRAV") : (token ? "CODEX TOKEN" : "CODEX");
+}
+
+void Api::adviceText(const AntigravityData& ag, const CodexData& cx, char* buf, size_t n) {
+    if (n) buf[0] = '\0';
+    // 1. A credential problem outranks any advice: the numbers aren't live.
+    if (CredState::bad(ag.cred) || CredState::bad(cx.cred)) {
+        bool isAg = CredState::bad(ag.cred);
+        Cred c = isAg ? ag.cred : cx.cred;
+        if (c == Cred::BLOCKED) snprintf_P(buf, n, PSTR("%s BLOCKED \xC2\xB7 RETRYING"), provName(isAg, false));
+        else snprintf_P(buf, n, PSTR("%s %s"), provName(isAg, true), c == Cred::EXPIRED ? "EXPIRED" : "REJECTED");
+        return;
+    }
+    if (!ag.valid || !cx.valid || ag.secondaryPct < 0 || cx.primaryPct < 0) return;
+    time_t now = time(nullptr);
+    if (now < 1000000000L) return;
+    struct Cand { const char* name; float pct; time_t reset; const ResetGrant* g; } c[2] = {
+        {"ANTIGRAV", ag.secondaryPct, ag.secondaryReset, &ag.resets},
+        {"CODEX",    cx.primaryPct,   cx.primaryReset,   &cx.resets},
+    };
+    // 2. Nearly out, but a limit-reset credit can be spent right now.
+    for (auto& k : c) {
+        if (k.pct < 15.0f && k.g->left && k.g->usable) {
+            snprintf_P(buf, n, PSTR("%s: %u RESET%s AVAILABLE"), k.name, k.g->left, k.g->left > 1 ? "S" : "");
+            return;
+        }
+    }
+    // 3. Use-it-or-lose-it: an allowance that resets soon with plenty unused.
+    int pick = -1;
+    for (int i = 0; i < 2; i++) {
+        long left = (long)(c[i].reset - now);
+        if (c[i].reset <= now || left > 48L * 3600L || c[i].pct < 25.0f) continue;
+        if (pick < 0 || c[i].reset < c[pick].reset) pick = i;
+    }
+    if (pick >= 0) {
+        char d[8]; TimeUtil::shortDuration((long)(c[pick].reset - now), d, sizeof(d));
+        snprintf_P(buf, n, PSTR("USE %s \xC2\xB7 RESETS %s"), c[pick].name, d);
+        return;
+    }
+    int most = c[0].pct >= c[1].pct ? 0 : 1;
+    if (c[most].pct < 15.0f) { snprintf_P(buf, n, PSTR("BOTH LOW")); return; }
+    snprintf_P(buf, n, PSTR("MOST ROOM: %s %.0f%%"), c[most].name, c[most].pct);
 }
 
 // ── shared TLS request ────────────────────────────────────────────────────────
-//
-// ESP8266 BearSSL is memory-hungry. We use a fresh client per request and free
-// it before deserialization to give ArduinoJson room.
 
-static bool tlsRequestOnce(const char* method, const String& url,
-                           const std::function<void(HTTPClient&)>& addHeaders,
-                           const String& postData,
-                           String& body, int& httpCode) {
+static Api::TlsResult tlsRequestStreamOnce(const char* method, const char* url,
+                                           const std::function<void(HTTPClient&)>& addHeaders,
+                                           const String& postData,
+                                           const std::function<bool(Stream&)>& onBody) {
+    Api::TlsResult r;
     BearSSL::WiFiClientSecure sc;
     sc.setInsecure();
     sc.setBufferSizes(4096, 1024);                      // 4K rx (cert chain), 1K tx
     HTTPClient http;
-    http.useHTTP10(true);                               // simpler/predictable, no chunked
+    http.useHTTP10(true);                               // no chunked encoding → streamable
     http.setTimeout(15000);
     if (!http.begin(sc, url)) {
-        httpCode = -2;                                  // -2 = begin() failed (URL/TLS init)
-        Serial.printf("[tls] http.begin failed, heap=%u, maxblk=%u\n",
-                      ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
-        return false;
+        Serial.printf_P(PSTR("[tls] http.begin failed, heap=%u, maxblk=%u\n"), ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
+        r.code = -2;                                    // -2 = begin() failed (URL/TLS init)
+        return r;
     }
+    static const char* kHeaders[] = {"Retry-After"};
+    http.collectHeaders(kHeaders, 1);
     addHeaders(http);
     if (strcmp(method, "POST") == 0) {
-        httpCode = http.POST(postData);
+        r.code = http.POST(postData);
     } else {
-        httpCode = http.GET();
+        r.code = http.GET();                            // negative = HTTPClient error
     }
-    Serial.printf("[tls] %s %s → %d, heap=%u, maxblk=%u\n",
-                  method, url.c_str(), httpCode, ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
-    if (httpCode == HTTP_CODE_OK) body = http.getString();
+    Serial.printf_P(PSTR("[tls] %s → %d, heap=%u, maxblk=%u\n"), method, r.code, ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
+    r.retryAfter = FetchPolicy::retryAfterSec(http.header("Retry-After").c_str(), time(nullptr));
+    if (r.code == HTTP_CODE_OK) {
+        r.parsed = onBody(http.getStream());
+    } else if (r.code == 401 || r.code == 403) {
+        Stream& s = http.getStream();
+        uint32_t until = millis() + 2000;
+        while (millis() < until) {
+            int c = s.read();
+            if (c < 0) { if (!http.connected()) break; delay(5); continue; }
+            if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+            r.markup = (c == '<');
+            break;
+        }
+    }
     http.end();
-    return httpCode == HTTP_CODE_OK;
+    return r;
 }
 
-static bool tlsRequest(const char* method, const String& url,
-                       const std::function<void(HTTPClient&)>& addHeaders,
-                       const String& postData,
-                       String& body, int& httpCode) {
+Api::TlsResult Api::tlsRequestStream(const char* method, const char* url,
+                                     const std::function<void(HTTPClient&)>& addHeaders,
+                                     const String& postData,
+                                     const std::function<bool(Stream&)>& onBody) {
     Display::releaseFont();
     yield(); delay(20);
+    Serial.printf_P(PSTR("[tls] heap=%u maxblk=%u url=%s\n"), ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), url);
 
-    Serial.printf("[tls] heap=%u maxblk=%u url=%s\n",
-                  ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), url.c_str());
-
-    if (tlsRequestOnce(method, url, addHeaders, postData, body, httpCode)) return true;
-
-    if (httpCode < 0) {
-        Serial.printf("[tls] retry after %d ...\n", httpCode);
-        yield(); delay(200);                            // let BearSSL/heap settle
-        if (tlsRequestOnce(method, url, addHeaders, postData, body, httpCode)) {
-            Serial.printf("[tls] retry succeeded\n");
-            return true;
-        }
-        Serial.printf("[tls] retry also failed (%d)\n", httpCode);
+    TlsResult r = tlsRequestStreamOnce(method, url, addHeaders, postData, onBody);
+    if (r.code < 0) {
+        Serial.printf_P(PSTR("[tls] retry after %d ...\n"), r.code);
+        yield(); delay(200);
+        r = tlsRequestStreamOnce(method, url, addHeaders, postData, onBody);
+        Serial.printf_P(PSTR("[tls] retry → %d\n"), r.code);
     }
-    return false;
+    return r;
 }
 
-static bool tlsGet(const String& url, const std::function<void(HTTPClient&)>& addHeaders,
-                   String& body, int& httpCode) {
-    return tlsRequest("GET", url, addHeaders, "", body, httpCode);
+Api::TlsResult Api::tlsGetStream(const char* url,
+                                 const std::function<void(HTTPClient&)>& addHeaders,
+                                 const std::function<bool(Stream&)>& onBody) {
+    return tlsRequestStream("GET", url, addHeaders, "", onBody);
 }
 
-static bool tlsPost(const String& url, const std::function<void(HTTPClient&)>& addHeaders,
-                    const String& postData, String& body, int& httpCode) {
-    return tlsRequest("POST", url, addHeaders, postData, body, httpCode);
-}
+// ── Per-source policy + telemetry ────────────────────────────────────────────
 
-// ── Transient failure suppression ────────────────────────────────────────────
-static constexpr int kMaxSilentFails = 3;
-static int s_agFails    = 0;
-static int s_codexFails = 0;
+static FetchPolicy::State s_agPol;
+static FetchPolicy::State s_codexPol;
+static int  s_dbgAgHttp = 0;
+static int  s_dbgAgBodyLen = 0;
+static char s_dbgAgParse[24] = "";
 
-// ── Debug telemetry (surfaced in /api/state) ──
-static int  s_dbgAgHttp    = 0;     // last Antigravity usage HTTP code
-static int  s_dbgAgBodyLen = -1;    // last Antigravity usage body length
-static char s_dbgAgParse[24] = "";  // last deserialization error text ("Ok" on success)
 namespace Api {
-    int  lastAgHttp()    { return s_dbgAgHttp; }
-    int  lastAgBodyLen() { return s_dbgAgBodyLen; }
-    const char* lastAgParse() { return s_dbgAgParse; }
+    const FetchPolicy::State& antigravityPolicy() { return s_agPol; }
+    const FetchPolicy::State& codexPolicy()       { return s_codexPol; }
+    int  lastAgHttp()          { return s_dbgAgHttp; }
+    int  lastAgBodyLen()       { return s_dbgAgBodyLen; }
+    const char* lastAgParse()  { return s_dbgAgParse; }
 }
 
-static bool agSoftFail(AntigravityData& out, const char* err) {
-    s_agFails++;
-    if (s_agFails < kMaxSilentFails) {
-        if (!out.valid) out.err[0] = '\0';   // cold boot → neutral "--", not an error
-        Serial.printf("[antigravity] soft fail (%s) %d/%d — %s\n", err, s_agFails,
-                      kMaxSilentFails, out.valid ? "keeping stale" : "showing placeholder");
+static uint32_t hashStr(const String& s) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < s.length(); i++) { h ^= (uint8_t)s[i]; h *= 16777619u; }
+    return h;
+}
+
+bool Api::refreshCred(const Settings& s, AntigravityData& ag, CodexData& cx) {
+    static bool     s_seeded = false;
+    static uint32_t s_agHash = 0, s_cxHash = 0;
+    bool changed = false;
+    uint32_t h = hashStr(s.agToken);
+    if (!s_seeded || h != s_agHash) {
+        changed |= s_seeded;
+        s_agHash = h; s_agPol = FetchPolicy::State(); ag.err[0] = '\0';
+    }
+    h = hashStr(s.codexToken);
+    if (!s_seeded || h != s_cxHash) {
+        changed |= s_seeded;
+        s_cxHash = h; s_codexPol = FetchPolicy::State(); cx.err[0] = '\0';
+        cx.jwtExp = CredState::jwtExp(s.codexToken.c_str());
+        cx.resets = ResetGrant{};
+    }
+    s_seeded = true;
+    time_t now = time(nullptr);
+    ag.cred = CredState::derive(!s.agToken.isEmpty(),    s_agPol,    0,         now, ag.valid);
+    cx.cred = CredState::derive(!s.codexToken.isEmpty(), s_codexPol, cx.jwtExp, now, cx.valid);
+    return changed;
+}
+
+static void transportErr(int code, char* e, size_t n) {
+    if (code < 0) snprintf_P(e, n, PSTR("Offline"));
+    else          snprintf_P(e, n, PSTR("HTTP %d"), code);
+}
+
+template <class D>
+static bool failSource(FetchPolicy::State& pol, D& out, const Api::TlsResult& r,
+                       const char* err, const char* tag) {
+    FetchPolicy::onFailure(pol, r.code, r.retryAfter, r.markup);
+    Serial.printf_P(PSTR("[%s] fail (%s) streak=%u auth=%u blocked=%u wait=%us\n"), tag, err,
+                    pol.fails, pol.authLatched, pol.blockedStreak, (unsigned)pol.waitS);
+    bool credIssue = pol.authLatched || FetchPolicy::blocked(pol);
+    if (credIssue || !FetchPolicy::shouldSurface(pol)) {
+        out.err[0] = '\0';
         return false;
     }
     strncpy(out.err, err, sizeof(out.err) - 1);
@@ -134,13 +212,20 @@ static bool agSoftFail(AntigravityData& out, const char* err) {
     return false;
 }
 
-// ── Antigravity fetch ────────────────────────────────────────────────────────
+template <class D>
+static void okSource(FetchPolicy::State& pol, D& out) {
+    FetchPolicy::onSuccess(pol, time(nullptr));
+    out.err[0] = '\0';
+    out.valid = true;
+    out.lastOk = pol.lastOk;
+}
+
+// ── Antigravity ─────────────────────────────────────────────────────────────
 
 static String s_agAccessToken;
 static time_t s_agTokenExpires = 0;
 static String s_agCachedRefreshToken;
 
-// Split to avoid false-positive flagging by automated push scanners for public OAuth client IDs
 static inline String getAgClientId() {
     return String("1071006060591-tmhssin2h21lcre235vtolojh4g403ep") + String(".apps.") + String("googleusercontent.com");
 }
@@ -148,270 +233,233 @@ static inline String getAgClientSecret() {
     return String("GOC") + String("SPX-K58FWR486LdLJ1mLB8sXC4z6qDAf");
 }
 
-static bool refreshAgAccessToken(const String& refreshToken, String& outAccessToken, char errBuf[]) {
+static bool refreshAgAccessToken(const String& refreshToken, String& outAccessToken, char errBuf[], size_t errBufLen) {
     String postBody = "client_id=" + getAgClientId() +
                       "&client_secret=" + getAgClientSecret() +
                       "&refresh_token=" + refreshToken +
                       "&grant_type=refresh_token";
 
-    String body; int code;
     auto addH = [&](HTTPClient& h) {
         h.addHeader("Content-Type", "application/x-www-form-urlencoded");
         h.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Antigravity/1.0");
     };
 
-    if (!tlsPost("https://oauth2.googleapis.com/token", addH, postBody, body, code)) {
-        snprintf(errBuf, 24, "Auth %d", code);
+    String tokenResult;
+    long exp = 3600;
+    Api::TlsResult r = Api::tlsRequestStream("POST", "https://oauth2.googleapis.com/token", addH, postBody,
+        [&](Stream& body) {
+            JsonDocument filter;
+            filter["access_token"] = true;
+            filter["expires_in"]   = true;
+            JsonDocument doc;
+            DeserializationError jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+            if (jerr) {
+                snprintf(errBuf, errBufLen, "JSON %s", jerr.c_str());
+                return false;
+            }
+            const char* at = doc["access_token"].as<const char*>();
+            if (!at || !*at) {
+                snprintf(errBuf, errBufLen, "No token");
+                return false;
+            }
+            tokenResult = at;
+            exp = doc["expires_in"] | 3600;
+            return true;
+        });
+
+    if (r.code != 200 || !r.parsed) {
+        if (!errBuf[0]) snprintf(errBuf, errBufLen, "Auth %d", r.code);
         return false;
     }
 
-    JsonDocument filter;
-    filter["access_token"] = true;
-    filter["expires_in"] = true;
-
-    JsonDocument doc;
-    DeserializationError jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
-    if (jerr) {
-        snprintf(errBuf, 24, "JSON %s", jerr.c_str());
-        return false;
-    }
-
-    const char* at = doc["access_token"].as<const char*>();
-    if (!at || !*at) {
-        snprintf(errBuf, 24, "No token");
-        return false;
-    }
-
-    outAccessToken = at;
-    long exp = doc["expires_in"] | 3600;
+    outAccessToken = tokenResult;
     time_t now = time(nullptr);
     s_agTokenExpires = (now > 1000000000L) ? (now + exp - 120) : (now + 3480);
     return true;
 }
 
 bool Api::fetchAntigravity(const Settings& s, AntigravityData& out) {
-    if (s.agToken.isEmpty()) { out.valid = false; return true; }
+    if (s.agToken.isEmpty()) return false;
 
     String accessToken;
     if (s.agToken.startsWith("ya29.")) {
-        // Direct access token provided
         accessToken = s.agToken;
     } else {
-        // Refresh token provided (e.g. 1//...)
         time_t now = time(nullptr);
         if (s_agAccessToken.length() && s_agCachedRefreshToken == s.agToken && (now < 1000000000L || now < s_agTokenExpires)) {
             accessToken = s_agAccessToken;
         } else {
             char authErr[24] = "";
-            if (!refreshAgAccessToken(s.agToken, accessToken, authErr)) {
-                return agSoftFail(out, authErr);
+            if (!refreshAgAccessToken(s.agToken, accessToken, authErr, sizeof(authErr))) {
+                Api::TlsResult r; r.code = 401;
+                return failSource(s_agPol, out, r, authErr, "antigravity");
             }
             s_agAccessToken = accessToken;
             s_agCachedRefreshToken = s.agToken;
-            yield(); delay(150);
+            yield(); delay(50);
         }
     }
 
-    String body; int code;
-    String url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
-    String postBody = "{\"project\":\"aicode-consumers\"}";
     auto addH = [&](HTTPClient& h) {
         h.addHeader("Authorization", "Bearer " + accessToken);
         h.addHeader("Content-Type",  "application/json");
         h.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Antigravity/1.0");
     };
 
-    JsonDocument doc;
-    DeserializationError jerr;
-    bool parsed = false;
+    AntigravityData next = out;
+    bool parsedOk = false;
+    String postBody = "{\"project\":\"aicode-consumers\"}";
 
-    // Filter keeps only needed fields, saving ESP8266 heap:
-    JsonDocument filter;
-    filter["groups"][0]["displayName"] = true;
-    filter["groups"][0]["buckets"][0]["bucketId"] = true;
-    filter["groups"][0]["buckets"][0]["remainingFraction"] = true;
-    filter["groups"][0]["buckets"][0]["resetTime"] = true;
+    Api::TlsResult r = tlsRequestStream("POST", "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        addH, postBody,
+        [&](Stream& body) {
+            JsonDocument filter;
+            filter["groups"][0]["displayName"] = true;
+            filter["groups"][0]["buckets"][0]["bucketId"] = true;
+            filter["groups"][0]["buckets"][0]["remainingFraction"] = true;
+            filter["groups"][0]["buckets"][0]["resetTime"] = true;
 
-    for (int attempt = 0; attempt < 2 && !parsed; attempt++) {
-        if (attempt) { yield(); delay(200); }
-        if (!tlsPost(url, addH, postBody, body, code)) {
-            s_dbgAgHttp = code; s_dbgAgBodyLen = -1;
-            snprintf(s_dbgAgParse, sizeof(s_dbgAgParse), "no-200");
-            char e[24]; snprintf(e, sizeof(e), "HTTP %d", code);
-            // If token expired, clear cache so next run refreshes
-            if (code == 401) { s_agAccessToken = ""; s_agTokenExpires = 0; }
-            return agSoftFail(out, e);
-        }
-        s_dbgAgHttp    = code;
-        s_dbgAgBodyLen = (int)body.length();
-        jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
-        strncpy(s_dbgAgParse, jerr.c_str(), sizeof(s_dbgAgParse) - 1);
-        s_dbgAgParse[sizeof(s_dbgAgParse) - 1] = '\0';
-        if (!jerr) { parsed = true; break; }
-        Serial.printf("[antigravity] quota parse err: %s (body=%u, heap=%u, maxblk=%u) attempt %d\n",
-                      jerr.c_str(), body.length(), ESP.getFreeHeap(),
-                      ESP.getMaxFreeBlockSize(), attempt + 1);
-        doc.clear();
+            JsonDocument doc;
+            DeserializationError jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+            strncpy(s_dbgAgParse, jerr.c_str(), sizeof(s_dbgAgParse) - 1);
+            if (jerr) {
+                Serial.printf_P(PSTR("[antigravity] parse: %s (heap=%u maxblk=%u)\n"), jerr.c_str(),
+                                ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
+                return false;
+            }
+
+            bool want3P = s.agModelLabel.equalsIgnoreCase("3p") || s.agModelLabel.equalsIgnoreCase("claude");
+            JsonArrayConst groups = doc["groups"].as<JsonArrayConst>();
+            JsonObjectConst chosenGroup;
+            for (JsonObjectConst g : groups) {
+                const char* name = g["displayName"] | "";
+                if (want3P && (strstr(name, "3p") || strstr(name, "Claude"))) {
+                    chosenGroup = g; break;
+                } else if (!want3P && (strstr(name, "Gemini") || strstr(name, "gemini"))) {
+                    chosenGroup = g; break;
+                }
+            }
+            if (chosenGroup.isNull() && groups.size() > 0) {
+                chosenGroup = groups[0];
+            }
+            if (chosenGroup.isNull()) return false;
+
+            auto rem = [](float fraction) {
+                float v = fraction * 100.0f;
+                if (v < 0.0f) v = 0.0f;
+                if (v > 100.0f) v = 100.0f;
+                return v;
+            };
+
+            for (JsonObjectConst b : chosenGroup["buckets"].as<JsonArrayConst>()) {
+                const char* bid = b["bucketId"] | "";
+                float fraction = b["remainingFraction"] | 0.0f;
+                const char* rt = b["resetTime"] | "";
+                time_t rst = rt ? TimeUtil::parseIso8601(rt) : 0;
+
+                if (strstr(bid, "5h")) {
+                    next.primaryPct    = rem(fraction);
+                    next.primaryReset  = rst;
+                    next.primaryWinSec = 18000;
+                } else if (strstr(bid, "weekly")) {
+                    next.secondaryPct    = rem(fraction);
+                    next.secondaryReset  = rst;
+                    next.secondaryWinSec = 604800;
+                }
+            }
+            parsedOk = true;
+            return true;
+        });
+
+    s_dbgAgHttp = r.code;
+    if (r.code == 401) {
+        s_agAccessToken = "";
+        s_agTokenExpires = 0;
     }
-    body = String();
-    if (!parsed) {
-        char e[24]; snprintf(e, sizeof(e), "JSON %s", jerr.c_str());
-        return agSoftFail(out, e);
+    if (r.code != 200) {
+        char e[24]; transportErr(r.code, e, sizeof(e));
+        return failSource(s_agPol, out, r, e, "antigravity");
     }
-    out.err[0] = '\0';
-    s_agFails = 0;
-
-    // Select group (default to "Gemini Models", or 3P if requested)
-    bool want3P = s.agModelLabel.equalsIgnoreCase("3p") || s.agModelLabel.equalsIgnoreCase("claude");
-    JsonArray groups = doc["groups"].as<JsonArray>();
-    JsonObject chosenGroup;
-    for (JsonObject g : groups) {
-        const char* name = g["displayName"] | "";
-        if (want3P && (strstr(name, "3p") || strstr(name, "Claude"))) {
-            chosenGroup = g; break;
-        } else if (!want3P && (strstr(name, "Gemini") || strstr(name, "gemini"))) {
-            chosenGroup = g; break;
-        }
+    if (!parsedOk) {
+        char e[24]; snprintf_P(e, sizeof(e), PSTR("JSON %s"), s_dbgAgParse[0] ? s_dbgAgParse : "err");
+        TlsResult p; p.code = 0;
+        return failSource(s_agPol, out, p, e, "antigravity");
     }
-    if (chosenGroup.isNull() && groups.size() > 0) {
-        chosenGroup = groups[0].as<JsonObject>();
-    }
-
-    if (chosenGroup.isNull()) {
-        char e[24] = "No groups";
-        return agSoftFail(out, e);
-    }
-
-    auto rem = [](float fraction) {
-        float v = fraction * 100.0f;
-        if (v < 0.0f) v = 0.0f;
-        if (v > 100.0f) v = 100.0f;
-        return v;
-    };
-
-    for (JsonObject b : chosenGroup["buckets"].as<JsonArray>()) {
-        const char* bid = b["bucketId"] | "";
-        float fraction = b["remainingFraction"] | 0.0f;
-        const char* rt = b["resetTime"] | "";
-        time_t rst = rt ? parseISO8601(rt) : 0;
-
-        if (strstr(bid, "5h")) {
-            out.primaryPct    = rem(fraction);
-            out.primaryReset  = rst;
-            out.primaryWinSec = 18000;
-        } else if (strstr(bid, "weekly")) {
-            out.secondaryPct    = rem(fraction);
-            out.secondaryReset  = rst;
-            out.secondaryWinSec = 604800;
-        }
-    }
-
-    out.valid = true;
 
     time_t t = time(nullptr);
     if (t > 1000000000L) {
         struct tm tm; localtime_r(&t, &tm);
         int h = tm.tm_hour;
-        out.hourlyPct[h]   = (uint8_t)(out.primaryPct < 0 ? 0 : out.primaryPct);
-        out.hourlyValid[h] = true;
+        next.hourlyPct[h]   = (uint8_t)(next.primaryPct < 0 ? 0 : next.primaryPct);
+        next.hourlyValid[h] = true;
     }
 
+    out = next;
+    okSource(s_agPol, out);
     return true;
 }
 
-// ── Codex fetch ──────────────────────────────────────────────────────────────
+// ── Codex ────────────────────────────────────────────────────────────────────
+
+static void codexHeaders(HTTPClient& h, const Settings& s, const String& authVal) {
+    h.addHeader("Authorization", authVal);
+    h.addHeader("Accept",        "application/json");
+    // Clean M2M user-agent matching official CLI client behavior (avoid fake browser headers)
+    h.setUserAgent("Codex-Monitor/1.0");
+    if (!s.codexDeviceId.isEmpty()) h.addHeader("oai-device-id", s.codexDeviceId);
+}
+
+static bool codexJwtExpired(const CodexData& d) {
+    time_t now = time(nullptr);
+    return d.jwtExp && now > 1000000000L && now >= d.jwtExp;
+}
 
 bool Api::fetchCodex(const Settings& s, CodexData& out) {
-    if (s.codexToken.isEmpty()) { out.valid = false; return true; }   // not configured ≠ error
+    if (s.codexToken.isEmpty() || codexJwtExpired(out)) return false;
 
-    String body; int code;
     String authVal = "Bearer " + s.codexToken;
-    auto addH = [&](HTTPClient& h){
-        h.addHeader("Authorization", authVal);
-        h.addHeader("Accept",        "application/json");
-        h.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)");
-        h.addHeader("Origin",        "https://chatgpt.com");
-        h.addHeader("Referer",       "https://chatgpt.com/");
-        if (!s.codexDeviceId.isEmpty()) h.addHeader("oai-device-id", s.codexDeviceId);
-    };
-    if (!tlsGet("https://chatgpt.com/backend-api/wham/usage", addH, body, code)) {
-        if (code < 0) {
-            s_codexFails++;
-            if (out.valid && s_codexFails < kMaxSilentFails) {
-                Serial.printf("[codex] transient TLS failure (%d), attempt %d/%d — keeping stale data\n", code, s_codexFails, kMaxSilentFails);
-                return false;
-            }
-        }
-        snprintf(out.err, sizeof(out.err), "HTTP %d", code);
-        out.valid = false;
+    CodexData next = out;
+    TlsResult r = tlsGetStream("https://chatgpt.com/backend-api/wham/usage",
+        [&](HTTPClient& h){ codexHeaders(h, s, authVal); },
+        [&](Stream& body) {
+            JsonDocument filter;
+            UsageParse::codexFilter(filter);
+            JsonDocument doc;
+            DeserializationError e = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+            if (e) { Serial.printf_P(PSTR("[codex] parse: %s\n"), e.c_str()); return false; }
+            return UsageParse::codex(doc.as<JsonVariantConst>(), next);
+        });
+    if (r.code != 200) {
+        char e[24]; transportErr(r.code, e, sizeof(e));
+        return failSource(s_codexPol, out, r, e, "codex");
+    }
+    if (!r.parsed) {
+        TlsResult p; p.code = 0;
+        return failSource(s_codexPol, out, p, "No data", "codex");
+    }
+    next.resets = out.resets;                // owned by fetchCodexResets
+    out = next;
+    okSource(s_codexPol, out);
+    return true;
+}
+
+bool Api::fetchCodexResets(const Settings& s, CodexData& out) {
+    if (s.codexToken.isEmpty() || codexJwtExpired(out)) return false;
+    String authVal = "Bearer " + s.codexToken;
+    ResetGrant g;
+    TlsResult r = tlsGetStream("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+        [&](HTTPClient& h){ codexHeaders(h, s, authVal); },
+        [&](Stream& body) {
+            JsonDocument filter;
+            UsageParse::codexResetsFilter(filter);
+            JsonDocument doc;
+            if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
+            return UsageParse::codexResets(doc.as<JsonVariantConst>(), g);
+        });
+    if (r.code != 200 || !r.parsed) {
+        Serial.printf_P(PSTR("[codex] resets fetch → %d\n"), r.code);
         return false;
     }
-    out.err[0] = '\0';
-    s_codexFails = 0;
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) { snprintf(out.err, sizeof(out.err), "parse"); out.valid=false; return false; }
-    body = String();
-
-    // Codex dropped the 5-hour window (2026-07): the API now returns a single
-    // weekly primary_window and a null secondary_window. Only the primary is
-    // required. When the secondary window is absent, fall back to the first
-    // per-model limit in additional_rate_limits (e.g. Codex-Spark) so the second
-    // row stays meaningful instead of blank.
-    JsonVariant pw = doc["rate_limit"]["primary_window"];
-    if (pw.isNull()) { snprintf(out.err, sizeof(out.err), "no data"); out.valid=false; return false; }
-
-    auto rem = [](float u){ float v = 100.0f - u; if (v<0)v=0; if (v>100)v=100; return v; };
-    out.primaryPct     = rem(pw["used_percent"].as<float>());
-    out.primaryReset   = (time_t)pw["reset_at"].as<long>();
-    out.primaryWinSec  = pw["limit_window_seconds"].as<long>();
-
-    out.secondaryTag[0] = '\0';
-    JsonVariant sw = doc["rate_limit"]["secondary_window"];
-    if (!sw.isNull()) {
-        out.secondaryPct    = rem(sw["used_percent"].as<float>());
-        out.secondaryReset  = (time_t)sw["reset_at"].as<long>();
-        out.secondaryWinSec = sw["limit_window_seconds"].as<long>();
-    } else {
-        out.secondaryPct = -1.0f; out.secondaryReset = 0; out.secondaryWinSec = 0;
-        for (JsonVariant a : doc["additional_rate_limits"].as<JsonArray>()) {
-            JsonVariant apw = a["rate_limit"]["primary_window"];
-            if (apw.isNull()) continue;
-            out.secondaryPct    = rem(apw["used_percent"].as<float>());
-            out.secondaryReset  = (time_t)apw["reset_at"].as<long>();
-            out.secondaryWinSec = apw["limit_window_seconds"].as<long>();
-            // Short tag from the last '-' segment of limit_name, uppercased.
-            const char* ln  = a["limit_name"] | "";
-            const char* seg = strrchr(ln, '-');
-            seg = seg ? seg + 1 : ln;
-            size_t j = 0;
-            for (; seg[j] && j < sizeof(out.secondaryTag) - 1; j++) {
-                char c = seg[j];
-                if (c >= 'a' && c <= 'z') c -= 32;
-                out.secondaryTag[j] = c;
-            }
-            out.secondaryTag[j] = '\0';
-            break;
-        }
-    }
-
-    bool hasCredits = doc["credits"]["has_credits"] | false;
-    if (hasCredits) {
-        const char* bal = doc["credits"]["balance"] | "0";
-        out.creditsRemain = atof(bal);
-    } else {
-        out.creditsRemain = -1.0f;
-    }
-
-    out.valid = true;
-
-    time_t t = time(nullptr);
-    if (t > 1000000000L) {
-        struct tm tm; localtime_r(&t, &tm);
-        int h = tm.tm_hour;
-        out.hourlyPct[h]   = (uint8_t)(out.primaryPct < 0 ? 0 : out.primaryPct);
-        out.hourlyValid[h] = true;
-    }
-
+    out.resets = g;
     return true;
 }
