@@ -328,6 +328,7 @@ static void handleApiPostSettings() {
 }
 
 static void handleApiExport() {
+    if (!checkAuth()) { server.send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     File f = LittleFS.open("/config.json", "r");
     if (!f) {
         // No saved config — synthesize from current
@@ -340,6 +341,7 @@ static void handleApiExport() {
 }
 
 static void handleApiImport() {
+    if (!checkAuth()) { server.send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     // Body is a full config.json. Validate it parses, then atomically replace
     // the file (tmp + rename) and restart.
     if (!Storage::importRaw(server.arg("plain"))) {
@@ -352,6 +354,7 @@ static void handleApiImport() {
 }
 
 static void handleFactoryReset() {
+    if (!checkAuth()) { server.send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     Storage::factoryReset();
     server.send(200, "application/json", "{\"ok\":true}");
     delay(200);
@@ -359,6 +362,7 @@ static void handleFactoryReset() {
 }
 
 static void handleReboot() {
+    if (!checkAuth()) { server.send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     server.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
     delay(300);
     ESP.restart();

@@ -627,7 +627,8 @@ function app() {
     async factoryReset() {
       if (!confirm('Erase all config and reboot?')) return;
       try {
-        await fetch('/api/factory-reset', {method: 'POST'});
+        const r = await fetch('/api/factory-reset', {method: 'POST', headers: this.authHeaders()});
+        if (r.status === 401) { this.showToast('Unauthorized: API token required', true); return; }
         this.showToast('Resetting...');
       } catch (e) {}
     },
@@ -635,7 +636,8 @@ function app() {
     async reboot() {
       if (!confirm('Reboot device?')) return;
       try {
-        await fetch('/api/reboot', {method: 'POST'});
+        const r = await fetch('/api/reboot', {method: 'POST', headers: this.authHeaders()});
+        if (r.status === 401) { this.showToast('Unauthorized: API token required', true); return; }
         this.showToast('Rebooting...');
       } catch (e) {}
     },
@@ -658,7 +660,8 @@ function app() {
 
     async exportConfig() {
       if (!confirm('This file contains your API keys and Wi-Fi password in plain text. Continue?')) return;
-      const r = await fetch('/api/export');
+      const r = await fetch('/api/export', {headers: this.authHeaders()});
+      if (r.status === 401) { this.showToast('Unauthorized: API token required', true); return; }
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -672,9 +675,10 @@ function app() {
       const text = await file.text();
       const r = await fetch('/api/import', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: this.authHeaders({'Content-Type': 'application/json'}),
         body: text
       });
+      if (r.status === 401) { this.showToast('Unauthorized: API token required', true); return; }
       if (r.ok) {
         this.showToast('Imported — restarting...');
         setTimeout(() => location.reload(), 3000);

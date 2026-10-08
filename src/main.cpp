@@ -259,8 +259,8 @@ static uint32_t jobIntervalMs(Job j) {
 static const FetchPolicy::State& jobPolicy(Job j) {
     switch (j) {
         case JOB_ANTIGRAVITY:   return Api::antigravityPolicy();
-        case JOB_CODEX:
-        case JOB_CODEX_RESETS:  return Api::codexPolicy();
+        case JOB_CODEX:         return Api::codexPolicy();
+        case JOB_CODEX_RESETS:  return Api::codexResetsPolicy();
         case JOB_WEATHER:       return Weather::policy();
         default:                return VendorStatus::policy(VendorStatus::OPENAI);
     }
@@ -268,7 +268,14 @@ static const FetchPolicy::State& jobPolicy(Job j) {
 
 void mainTriggerRefresh() {
     uint32_t now = millis();
-    for (auto& d : g_jobDue) d = now;
+    for (int i = 0; i < JOB_COUNT; i++) {
+        const FetchPolicy::State& pol = jobPolicy((Job)i);
+        // Do not bypass active backoff/Retry-After cooldown or latched auth failure
+        if (pol.waitS > 0 || pol.authLatched || ((int32_t)(g_jobDue[i] - now) > 0 && pol.fails > 0)) {
+            continue;
+        }
+        g_jobDue[i] = now;
+    }
 }
 
 uint32_t mainNextFetchInMs() {
@@ -319,7 +326,7 @@ static void runJob(Job j) {
 
     uint32_t now = millis();
     const FetchPolicy::State& pol = jobPolicy(j);
-    uint32_t waitMs = (ok || j == JOB_CODEX_RESETS) ? jobIntervalMs(j)
+    uint32_t waitMs = ok ? jobIntervalMs(j)
                          : (pol.waitS ? pol.waitS * 1000UL : jobIntervalMs(j));
     g_jobDue[j] = now + waitMs;
     g_lastRefresh = now;

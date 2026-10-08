@@ -150,6 +150,7 @@ Api::TlsResult Api::tlsGetStream(const char* url,
 
 static FetchPolicy::State s_agPol;
 static FetchPolicy::State s_codexPol;
+static FetchPolicy::State s_codexResetsPol;
 static int  s_dbgAgHttp = 0;
 static int  s_dbgAgBodyLen = 0;
 static char s_dbgAgParse[24] = "";
@@ -157,6 +158,7 @@ static char s_dbgAgParse[24] = "";
 namespace Api {
     const FetchPolicy::State& antigravityPolicy() { return s_agPol; }
     const FetchPolicy::State& codexPolicy()       { return s_codexPol; }
+    const FetchPolicy::State& codexResetsPolicy() { return s_codexResetsPol; }
     int  lastAgHttp()          { return s_dbgAgHttp; }
     int  lastAgBodyLen()       { return s_dbgAgBodyLen; }
     const char* lastAgParse()  { return s_dbgAgParse; }
@@ -180,7 +182,7 @@ bool Api::refreshCred(const Settings& s, AntigravityData& ag, CodexData& cx) {
     h = hashStr(s.codexToken);
     if (!s_seeded || h != s_cxHash) {
         changed |= s_seeded;
-        s_cxHash = h; s_codexPol = FetchPolicy::State(); cx.err[0] = '\0';
+        s_cxHash = h; s_codexPol = FetchPolicy::State(); s_codexResetsPol = FetchPolicy::State(); cx.err[0] = '\0';
         cx.jwtExp = CredState::jwtExp(s.codexToken.c_str());
         cx.resets = ResetGrant{};
     }
@@ -233,7 +235,7 @@ static inline String getAgClientSecret() {
     return String("GOC") + String("SPX-K58FWR486LdLJ1mLB8sXC4z6qDAf");
 }
 
-static bool refreshAgAccessToken(const String& refreshToken, String& outAccessToken, char errBuf[], size_t errBufLen) {
+static Api::TlsResult refreshAgAccessToken(const String& refreshToken, String& outAccessToken, char errBuf[], size_t errBufLen) {
     String postBody = "client_id=" + getAgClientId() +
                       "&client_secret=" + getAgClientSecret() +
                       "&refresh_token=" + refreshToken +
@@ -269,13 +271,13 @@ static bool refreshAgAccessToken(const String& refreshToken, String& outAccessTo
 
     if (r.code != 200 || !r.parsed) {
         if (!errBuf[0]) snprintf(errBuf, errBufLen, "Auth %d", r.code);
-        return false;
+        return r;
     }
 
     outAccessToken = tokenResult;
     time_t now = time(nullptr);
     s_agTokenExpires = (now > 1000000000L) ? (now + exp - 120) : (now + 3480);
-    return true;
+    return r;
 }
 
 bool Api::fetchAntigravity(const Settings& s, AntigravityData& out) {
@@ -290,9 +292,9 @@ bool Api::fetchAntigravity(const Settings& s, AntigravityData& out) {
             accessToken = s_agAccessToken;
         } else {
             char authErr[24] = "";
-            if (!refreshAgAccessToken(s.agToken, accessToken, authErr, sizeof(authErr))) {
-                Api::TlsResult r; r.code = 401;
-                return failSource(s_agPol, out, r, authErr, "antigravity");
+            Api::TlsResult authResult = refreshAgAccessToken(s.agToken, accessToken, authErr, sizeof(authErr));
+            if (authResult.code != 200 || !authResult.parsed) {
+                return failSource(s_agPol, out, authResult, authErr[0] ? authErr : "Auth fail", "antigravity");
             }
             s_agAccessToken = accessToken;
             s_agCachedRefreshToken = s.agToken;
@@ -457,9 +459,11 @@ bool Api::fetchCodexResets(const Settings& s, CodexData& out) {
             return UsageParse::codexResets(doc.as<JsonVariantConst>(), g);
         });
     if (r.code != 200 || !r.parsed) {
-        Serial.printf_P(PSTR("[codex] resets fetch → %d\n"), r.code);
+        Serial.printf_P(PSTR("[codex] resets fetch → %d (retryAfter=%ld)\n"), r.code, r.retryAfter);
+        FetchPolicy::onFailure(s_codexResetsPol, r.code, r.retryAfter, r.markup);
         return false;
     }
+    FetchPolicy::onSuccess(s_codexResetsPol, time(nullptr));
     out.resets = g;
     return true;
 }

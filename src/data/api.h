@@ -45,6 +45,7 @@ namespace Api {
 
     const FetchPolicy::State& antigravityPolicy();
     const FetchPolicy::State& codexPolicy();
+    const FetchPolicy::State& codexResetsPolicy();
 
     // Helpers for displaying countdowns.
     String formatCountdown(time_t t);
