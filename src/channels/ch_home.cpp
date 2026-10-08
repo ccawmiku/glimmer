@@ -10,8 +10,8 @@
 //   y=62..76   right column condition word (DMMono-11 INK_DIM)
 //   y=92..104  date row "SUN MAY 17"
 //   y=108      dots divider
-//   y=114..128 CL meter row
-//   y=132..146 CX meter row
+//   y=114..128 AG meter row (Antigravity Blue)
+//   y=132..146 CX meter row (Codex Lilac)
 //   y=152      dots divider
 //   y=158..172 "TODAY" + "Nh LEFT"
 //   y=178..    24-hour strip with current-hour amber marker
@@ -23,16 +23,19 @@
 #include "config.h"
 #include "weather.h"
 #include "weather_icons.h"
+#include "clockfmt.h"
+#include "chrome.h"
 #include <ESP8266WiFi.h>
 #include <time.h>
 #include <math.h>
-
-extern WeatherData* weatherSnapshotPtr();
 
 // ── File-static cache so tick() can diff vs last paint ──
 static int     s_hh = -1, s_mm = -1, s_dayHour = -1;
 static float   s_ag = -2.f, s_cx = -2.f;
 static int     s_loadDot = -1;
+static char    s_rain[32] = "";   // footer-left text on screen
+static Cred    s_agCred = Cred::NOT_SET, s_cxCred = Cred::NOT_SET;
+static int     s_rainMin = -1;
 static float   s_tempC = -999.f;
 static uint8_t s_code = 255;
 // Clock x-geometry cached on first paint
@@ -57,9 +60,9 @@ static void clockGeom() {
 
 // ── Per-region paint helpers ──
 
-static void paintHH(int hh) {
+static void paintHH(int hh, bool h24) {
     clockGeom();
-    char b[4]; snprintf(b, sizeof(b), "%02d", hh);
+    char b[4]; ClockFmt::hourField(hh, h24, b, sizeof(b));
     tft.fillRect(s_hhX, 6, s_digitW * 2, 86, Theme::BG);
     Display::useFont("VT323-86");
     tft.setTextDatum(TL_DATUM);
@@ -77,7 +80,7 @@ static void paintColon() {
 
 static void paintMM(int mm) {
     clockGeom();
-    char b[4]; snprintf(b, sizeof(b), "%02d", mm);
+    char b[4]; snprintf_P(b, sizeof(b), PSTR("%02d"), mm);
     tft.fillRect(s_mmX, 6, s_digitW * 2, 86, Theme::BG);
     Display::useFont("VT323-86");
     tft.setTextDatum(TL_DATUM);
@@ -88,9 +91,9 @@ static void paintMM(int mm) {
 static void paintWeatherTemp(const WeatherData* w, bool f) {
     char tBuf[8];
     if (w && w->valid)
-        snprintf(tBuf, sizeof(tBuf), "%.0f\xC2\xB0", Weather::toDisplay(w->tempC, f));
+        snprintf_P(tBuf, sizeof(tBuf), PSTR("%.0f\xC2\xB0"), Weather::toDisplay(w->tempC, f));
     else
-        snprintf(tBuf, sizeof(tBuf), "--\xC2\xB0");
+        snprintf_P(tBuf, sizeof(tBuf), PSTR("--\xC2\xB0"));
     tft.fillRect(SCREEN_W - 86, 14, 80, 36, Theme::BG);
     Display::useFont("VT323-32");
     tft.setTextDatum(TR_DATUM);
@@ -102,9 +105,9 @@ static void paintWeatherFeels(const WeatherData* w, bool f) {
     char b[16];
     if (w && w->valid) {
         float fl = w->feelsC > -900 ? w->feelsC : w->tempC;
-        snprintf(b, sizeof(b), "feels %.0f\xC2\xB0", Weather::toDisplay(fl, f));
+        snprintf_P(b, sizeof(b), PSTR("feels %.0f\xC2\xB0"), Weather::toDisplay(fl, f));
     } else {
-        snprintf(b, sizeof(b), "feels --");
+        snprintf_P(b, sizeof(b), PSTR("feels --"));
     }
     tft.fillRect(SCREEN_W - 86, 48, 80, 14, Theme::BG);
     Display::useFont("DMMono-11");
@@ -116,7 +119,7 @@ static void paintWeatherFeels(const WeatherData* w, bool f) {
 static void paintWeatherCondition(const WeatherData* w) {
     tft.fillRect(SCREEN_W - 86, 62, 86, 34, Theme::BG);
     if (w && w->valid) {
-        WeatherIcon::draw(SCREEN_W - 36, 62, w->code, Theme::SKY, 2);
+        WeatherIcon::draw(SCREEN_W - 36, 62, w->code, Theme::SKY, 2, !w->isDay);
         Display::useFont("DMMono-11");
         tft.setTextDatum(TR_DATUM);
         tft.setTextColor(Theme::INK_DIM, Theme::BG);
@@ -145,8 +148,6 @@ static void paintMeter(int y, const char* tag, uint16_t tagColor,
     tft.drawString(val, SCREEN_W - 10, y);
 }
 
-// Loading variant: tag on the left, a compact 3-dot chaser where the value
-// would be. No bar — reads clearly as "not here yet".
 static void paintMeterLoading(int y, const char* tag, uint16_t tagColor,
                               int lit, uint16_t accent) {
     tft.fillRect(0, y, SCREEN_W, 16, Theme::BG);
@@ -157,29 +158,66 @@ static void paintMeterLoading(int y, const char* tag, uint16_t tagColor,
     Display::loadingDots(SCREEN_W - 10 - 24, y + 4, lit, accent, 3);
 }
 
-static void paintAG(float ag, bool loading, int lit) {
-    if (loading) { paintMeterLoading(114, "AG", Theme::BLUE, lit, Theme::BLUE); return; }
-    char buf[8];
-    if (ag >= 0) snprintf(buf, sizeof(buf), "%.0f%%", ag);
-    else         snprintf(buf, sizeof(buf), "--");
-    paintMeter(114, "AG", Theme::BLUE, ag < 0 ? 0 : ag,
-               Display::usageColor(ag), buf);
+static void paintMeterNote(int y, const char* tag, uint16_t tagColor,
+                           const char* note, uint16_t noteColor) {
+    tft.fillRect(0, y, SCREEN_W, 16, Theme::BG);
+    Display::useFont("Silkscreen-12");
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(tagColor, Theme::BG);
+    tft.drawString(tag, 10, y);
+    Display::useFont("DMMono-11");
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(noteColor, Theme::BG);
+    tft.drawString(note, SCREEN_W - 10, y);
 }
 
-static void paintCX(float cx, bool loading, int lit) {
-    if (loading) { paintMeterLoading(132, "CX", Theme::LILAC, lit, Theme::LILAC); return; }
+static void paintUsageRow(int y, const char* tag, uint16_t tagColor, bool isAg,
+                          Cred cred, float pct, bool loading, int lit) {
+    char note[40]; Chrome::credLine(isAg, cred, note, sizeof(note));
+    if (note[0]) {
+        uint16_t c = cred == Cred::NOT_SET ? Theme::MUTED : credColor(cred);
+        paintMeterNote(y, tag, cred == Cred::NOT_SET ? Theme::MUTED : tagColor, note, c);
+        return;
+    }
+    if (loading) { paintMeterLoading(y, tag, tagColor, lit, tagColor); return; }
     char buf[8];
-    if (cx >= 0) snprintf(buf, sizeof(buf), "%.0f%%", cx);
-    else         snprintf(buf, sizeof(buf), "--");
-    paintMeter(132, "CX", Theme::LILAC, cx < 0 ? 0 : cx,
-               Display::usageColor(cx), buf);
+    if (pct >= 0) snprintf_P(buf, sizeof(buf), PSTR("%.0f%%"), pct);
+    else          snprintf_P(buf, sizeof(buf), PSTR("--"));
+    paintMeter(y, tag, tagColor, pct < 0 ? 0 : pct, Display::usageColor(pct), buf);
+}
+
+static void paintAG(const ChannelCtx& ctx, float ag, bool loading, int lit) {
+    paintUsageRow(114, "AG", Theme::BLUE, true, ctx.antigravity->cred, ag, loading, lit);
+}
+
+static void paintCX(const ChannelCtx& ctx, float cx, bool loading, int lit) {
+    paintUsageRow(132, "CX", Theme::LILAC, false, ctx.codex->cred, cx, loading, lit);
+}
+
+static uint16_t footerText(const ChannelCtx& ctx, char* buf, size_t n) {
+    struct P { const char* name; Cred cred; time_t exp; } ps[2] = {
+        {"ANTIGRAVITY TOKEN", ctx.antigravity->cred, 0},
+        {"CODEX TOKEN",       ctx.codex->cred,       ctx.codex->jwtExp},
+    };
+    for (const auto& p : ps) {
+        if (!CredState::bad(p.cred)) continue;
+        snprintf_P(buf, n, PSTR("%s %s"), p.name, p.cred == Cred::BLOCKED ? "BLOCKED" :
+                                          p.cred == Cred::EXPIRED ? "EXPIRED" : "REJECTED");
+        return credColor(p.cred);
+    }
+    for (const auto& p : ps) {
+        if (p.cred != Cred::EXPIRING) continue;
+        char d[8]; TimeUtil::shortDuration((long)(p.exp - time(nullptr)), d, sizeof(d));
+        snprintf_P(buf, n, PSTR("%s %s LEFT"), p.name, d);
+        return Theme::AMBER;
+    }
+    Weather::rainHint(*ctx.settings, buf, n);
+    if (buf[0]) return Theme::SKY;
+    snprintf_P(buf, n, PSTR("HOME"));
+    return Theme::MUTED;
 }
 
 static void paintHourStrip(int curHour) {
-    // Layout: TODAY label at y=154 (Silkscreen-12, spans y=154..167).
-    // Strip baseline at y=180; current-hour marker at y=172..175; tallest tick
-    // up to 6 px above baseline (y=174..180). Clear region y=170..182 keeps
-    // 3 px clearance below TODAY.
     int stripX = 10, stripY = 180, stripW = SCREEN_W - 20;
     tft.fillRect(stripX, stripY - 10, stripW, 12, Theme::BG);
     tft.drawFastHLine(stripX, stripY, stripW, Theme::LINE);
@@ -194,9 +232,8 @@ static void paintHourStrip(int curHour) {
     int curX = stripX + (stripW * curHour) / 24;
     tft.fillRect(curX - 1, stripY - 8, 3, 3, Theme::AMBER);
 
-    // "Nh LEFT" right at y=154 (same line as TODAY label)
     char leftBuf[12];
-    snprintf(leftBuf, sizeof(leftBuf), "%dh LEFT", 23 - curHour);
+    snprintf_P(leftBuf, sizeof(leftBuf), PSTR("%dh LEFT"), 23 - curHour);
     tft.fillRect(SCREEN_W - 80, 152, 76, 14, Theme::BG);
     Display::useFont("DMMono-11");
     tft.setTextDatum(TR_DATUM);
@@ -204,29 +241,36 @@ static void paintHourStrip(int curHour) {
     tft.drawString(leftBuf, SCREEN_W - 10, 154);
 }
 
+static void paintFooterLeft(const char* text, uint16_t color) {
+    tft.fillRect(0, 198, 138, 16, Theme::BG);           // stops short of the IP
+    Display::useFont("DMMono-11");
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, Theme::BG);
+    tft.drawString(text, 10, 200);
+    strncpy(s_rain, text, sizeof(s_rain) - 1);
+}
+
 // ── Full repaint ──
 
 void chHomeDraw(const ChannelCtx& ctx) {
     Display::clear();
-    // Note: the "vital signs" Home design has no top status bar — the clock
-    // takes the top of the canvas, and the chrome is the footer (HOME | IP).
 
     time_t now = time(nullptr);
     struct tm tmv; localtime_r(&now, &tmv);
 
     // Hero clock
-    paintHH(tmv.tm_hour);
+    paintHH(tmv.tm_hour, ctx.settings->clock24h);
     paintColon();
     paintMM(tmv.tm_min);
 
     // Weather column
-    WeatherData* w = weatherSnapshotPtr();
+    const WeatherData* w = &Weather::snapshot();
     bool f = ctx.settings && ctx.settings->useFahrenheit;
     paintWeatherTemp(w, f);
     paintWeatherFeels(w, f);
     paintWeatherCondition(w);
 
-    // Date row (static-ish, only changes day-over-day)
+    // Date row
     char dateBuf[24];
     strftime(dateBuf, sizeof(dateBuf), "%a %b %d", &tmv);
     for (int i = 0; dateBuf[i] && i < 20; i++) {
@@ -239,20 +283,21 @@ void chHomeDraw(const ChannelCtx& ctx) {
 
     Display::dotsDivider(10, 108, SCREEN_W - 20);
 
-    // AI meters — "loading" only for a *configured* side (an unconfigured slot
-    // stays valid=false/err="" and must read as "--", not a perpetual loader).
+    // AI meters
     const bool agLoading = ctx.antigravity && !ctx.settings->agToken.isEmpty()   && antigravityLoading(*ctx.antigravity);
     const bool cxLoading = ctx.codex       && !ctx.settings->codexToken.isEmpty() && codexLoading(*ctx.codex);
     float ag = ctx.antigravity ? Api::antigravityHeroPct(*ctx.settings, *ctx.antigravity) : -1.f;
     float cx = ctx.codex       ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
     const int lit = (ctx.now_ms / 150) % 3;
-    paintAG(ag, agLoading, lit);
-    paintCX(cx, cxLoading, lit);
+    paintAG(ctx, ag, agLoading, lit);
+    paintCX(ctx, cx, cxLoading, lit);
+    s_agCred = ctx.antigravity ? ctx.antigravity->cred : Cred::NOT_SET;
+    s_cxCred = ctx.codex ? ctx.codex->cred : Cred::NOT_SET;
     s_loadDot = (agLoading || cxLoading) ? lit : -1;
 
     Display::dotsDivider(10, 152, SCREEN_W - 20);
 
-    // "TODAY" label at y=154 — paintHourStrip clears from y=170 so no overlap.
+    // "TODAY" label at y=154
     Display::useFont("Silkscreen-12");
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(Theme::MUTED, Theme::BG);
@@ -260,14 +305,14 @@ void chHomeDraw(const ChannelCtx& ctx) {
     paintHourStrip(tmv.tm_hour);
 
     // Footer
+    char foot[32]; uint16_t fc = footerText(ctx, foot, sizeof(foot));
+    paintFooterLeft(foot, fc);
     Display::useFont("DMMono-11");
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(Theme::MUTED, Theme::BG);
-    tft.drawString("HOME", 10, 200);
     tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(Theme::MUTED, Theme::BG);
     tft.drawString(WiFi.localIP().toString(), SCREEN_W - 10, 200);
 
-    // ── Seed cache ──
+    // Seed cache
     s_hh = tmv.tm_hour; s_mm = tmv.tm_min; s_dayHour = tmv.tm_hour;
     s_ag = (ag < 0) ? -2.f : ag;
     s_cx = (cx < 0) ? -2.f : cx;
@@ -284,14 +329,19 @@ void chHomeTick(const ChannelCtx& ctx) {
 
     // Clock
     if (tmv.tm_min != s_mm) { paintMM(tmv.tm_min); s_mm = tmv.tm_min; }
-    if (tmv.tm_hour != s_hh) { paintHH(tmv.tm_hour); s_hh = tmv.tm_hour; }
+    if (tmv.tm_hour != s_hh) { paintHH(tmv.tm_hour, ctx.settings->clock24h); s_hh = tmv.tm_hour; }
+    if (tmv.tm_min != s_rainMin) {
+        char foot[32]; uint16_t fc = footerText(ctx, foot, sizeof(foot));
+        if (strcmp(foot, s_rain) != 0) paintFooterLeft(foot, fc);
+        s_rainMin = tmv.tm_min;
+    }
     if (tmv.tm_hour != s_dayHour) {
         paintHourStrip(tmv.tm_hour);
         s_dayHour = tmv.tm_hour;
     }
 
-    // Weather (only repaint on meaningful change)
-    WeatherData* w = weatherSnapshotPtr();
+    // Weather
+    const WeatherData* w = &Weather::snapshot();
     bool f = ctx.settings && ctx.settings->useFahrenheit;
     if (w && w->valid) {
         if (fabsf(w->tempC - s_tempC) > 0.4f) {
@@ -305,27 +355,28 @@ void chHomeTick(const ChannelCtx& ctx) {
         }
     }
 
-    // AI meters — chase dots while a side is still loading; else hysteresis on
-    // ±0.4% so noise doesn't thrash.
+    // AI meters
     const bool agLoading = ctx.antigravity && !ctx.settings->agToken.isEmpty()  && antigravityLoading(*ctx.antigravity);
     const bool cxLoading = ctx.codex       && !ctx.settings->codexToken.isEmpty() && codexLoading(*ctx.codex);
     const float ag = ctx.antigravity ? Api::antigravityHeroPct(*ctx.settings, *ctx.antigravity) : -1.f;
     const float cx = ctx.codex       ? Api::codexHeroPct(*ctx.settings, *ctx.codex) : -1.f;
     const int lit = (ctx.now_ms / 150) % 3;
 
+    if (ctx.antigravity && ctx.antigravity->cred != s_agCred) { s_ag = -3.f; s_agCred = ctx.antigravity->cred; }
+    if (ctx.codex && ctx.codex->cred != s_cxCred)             { s_cx = -3.f; s_cxCred = ctx.codex->cred; }
     if (agLoading) {
-        if (lit != s_loadDot) paintAG(ag, true, lit);
-        s_ag = -2.f;                                  // force repaint when data lands
+        if (lit != s_loadDot) paintAG(ctx, ag, true, lit);
+        s_ag = -2.f;
     } else {
         float ag_eff = (ag < 0) ? -2.f : ag;
-        if (fabsf(ag_eff - s_ag) > 0.4f) { paintAG(ag, false, lit); s_ag = ag_eff; }
+        if (fabsf(ag_eff - s_ag) > 0.4f) { paintAG(ctx, ag, false, lit); s_ag = ag_eff; }
     }
     if (cxLoading) {
-        if (lit != s_loadDot) paintCX(cx, true, lit);
+        if (lit != s_loadDot) paintCX(ctx, cx, true, lit);
         s_cx = -2.f;
     } else {
         float cx_eff = (cx < 0) ? -2.f : cx;
-        if (fabsf(cx_eff - s_cx) > 0.4f) { paintCX(cx, false, lit); s_cx = cx_eff; }
+        if (fabsf(cx_eff - s_cx) > 0.4f) { paintCX(ctx, cx, false, lit); s_cx = cx_eff; }
     }
     if (agLoading || cxLoading) s_loadDot = lit;
 }
