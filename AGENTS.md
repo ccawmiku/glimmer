@@ -1,92 +1,40 @@
-# AGENTS.md — orientation for AI agents
+# 项目入口
 
-Working on this repo? Start here.
+本仓库是 GeekMagic SmallTV-Ultra 的 ESP8266 精简固件，只有时间与额度、反重力额度、设备状态、潜在空间画廊四页。网页在 `data/web/`，使用原生 JavaScript，必须保持中文。
 
-## What this is
+非平凡修改前阅读 `CLAUDE.md`；刷写步骤见 `FLASHING.md`，画廊评估见 `docs/GALLERY_PORT.md`。
 
-Firmware for the GeekMagic SmallTV-Ultra (ESP8266, 240×240 ST7789).
-PlatformIO project. C++ + a small Alpine.js web UI under `data/web/`.
+## 必须遵守
 
-## Where to look first
+1. 页面 `tick()` 不调用 `Display::clear()` 或 `tft.fillScreen()`。普通页面按区域更新；画廊先合成一行，再一次上传。
+2. 字体通过 `Display::useFont()` 加载，路径为 `fonts/<name>`，`loadFont` 必须显式传 `LittleFS`。
+3. 新设置同时维护 `storage.h`、`storage.cpp`、`web.cpp`、`data/web/index.html`，并按需要维护 `data/web/js/app.js` 的表单逻辑。
+4. 文件系统刷写会清除配置，必须先导出备份；固件先刷，文件系统后刷。
+5. 不分配完整权重矩阵或全屏缓冲。TLS 调用前释放字体缓存，保留 `yield()`。
+6. 不重新加入天气、推送、MCP、吉祥物、动画转场等已移除功能，除非用户明确要求。
+7. 交付时更新版本，构建固件和文件系统，并执行 `python tools/package.py` 生成镜像包。
 
-- `README.md` — user-facing intro and quick start.
-- `CLAUDE.md` — the technical learnings, gotchas, and architectural
-  discipline. Read this BEFORE making non-trivial changes. It documents
-  bugs that cost days of debugging.
-- `FLASHING.md` — how a device gets glimmer onto it.
-- `.claude/skills/` — task-specific runbooks:
-  - `flash-device.md` — flash a fresh SmallTV-Ultra
-  - `regenerate-fonts.md` — rebuild VLW bitmap fonts
-- `src/channels/channel.h` — defines the channel API and the **PARTIAL
-  REDRAW DISCIPLINE**. Every channel that updates live data must follow
-  this.
+## 目录
 
-## House rules (TL;DR — full version in CLAUDE.md)
+- `src/main.cpp`：四页注册、轮播、配网、刷新。
+- `src/core/`：屏幕、配置、存储、中文网页 API。
+- `src/data/`：反重力和 Codex 额度客户端。
+- `src/channels/`：四个页面。
+- `src/gallery/`：可在 ESP 与主机共用的低内存随机网络和条纹引擎。
+- `data/`：六个使用中的字体和中文网页。
+- `tests/`：上游画廊参照与浏览器验证，不能放入设备文件系统。
+- `tools/package.py`：分区镜像、串口合并镜像、中文说明、校验值。
 
-1. **Inside `tick()`, never call `Display::clear()` or `tft.fillScreen()`.**
-   Use cached state + per-region paint helpers.
-2. **VLW fonts**: pass `LittleFS` explicitly to `tft.loadFont()` and use
-   the path prefix `fonts/<name>`. `Display::useFont()` handles this.
-3. **Settings round-trip needs four files**: `storage.h`, `storage.cpp`,
-   `web.cpp`, `data/web/index.html`. Miss one and the new setting either
-   doesn't persist or doesn't show in the UI.
-4. **OTA filesystem flash wipes config** — back up via `/api/export`
-   before, restore via `/api/import` from the setup AP.
+## 验证
 
-## Repo layout
-
-```
-glimmer/
-├── platformio.ini           build config
-├── src/
-│   ├── main.cpp             channel rotation + boot path
-│   ├── core/                display, storage, web, theme, layout, pip (deprecated)
-│   ├── channels/            ch_*.cpp — one per rotation channel
-│   ├── data/                api clients (Claude, Codex), weather fetch
-│   └── ui/                  transitions, pip primitives
-├── data/
-│   ├── fonts/               VLW bitmap fonts (built by tools/genfonts.py)
-│   └── web/                 HTML/JS/CSS setup UI (Alpine.js)
-├── tools/
-│   ├── genfonts.py          freetype-py → VLW
-│   └── ttf/                 source TTFs (OFL licensed)
-├── README.md
-├── FLASHING.md
-├── CLAUDE.md                ← read this
-├── AGENTS.md                ← you are here
-└── .claude/skills/          runbooks for common tasks
+```bash
+python tests/verify_gallery.py
+npm ci
+npx playwright install chromium
+npm run test:web
+python -m platformio run -e nodemcuv2
+python -m platformio run -e nodemcuv2 -t buildfs
+python tools/package.py
 ```
 
-## When you ship
-
-- Bump `FW_VERSION` in `platformio.ini`.
-- Build firmware **and** filesystem if anything under `data/` changed.
-- Default: flash firmware-only (preserves config). Filesystem flash =
-  config wipe = recovery dance.
-
-## CI / prebuilt binaries
-
-GitHub Actions (`.github/workflows/build.yml`) builds on every push and PR:
-
-- **Push to `main`** → rebuilds the rolling **`latest`** release. Stable URLs,
-  always current:
-  `https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin`
-  (and `littlefs.bin`).
-- **Push a `v*` tag** → cuts a permanent, versioned release with the same assets.
-- **PR** → build only (CI artifact), no release.
-
-For first-time flashing you (or the user) can **download these instead of
-running `pio run`** — no toolchain needed. The `flash-device` skill and
-`FLASHING.md` default to the download path. Only build locally when flashing
-*uncommitted* changes. To cut a version: bump `FW_VERSION`, then
-`git tag vX.Y.Z && git push --tags`.
-
-## Don't
-
-- Add libraries beyond what's in `platformio.ini` unless absolutely
-  needed. Heap is ~30 KB; every dependency eats into it.
-- Re-introduce the Pip mascot. The project intentionally removed it.
-- Add full-screen transitions on rotation — they pull attention on a
-  desk display.
-- Touch `src/core/storage.cpp` without also editing the matching field
-  in `data/web/index.html` and `src/core/web.cpp`.
+未接实机时明确说明验证边界，不能把模拟 API 或主机图片说成设备实测。

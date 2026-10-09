@@ -1,162 +1,43 @@
-# glimmer — collaboration notes for Claude Code
+# 小电视开发注意事项
 
-This file captures the hard-won learnings from building this firmware,
-so future sessions don't re-walk the same dead ends. Keep it tight and
-factual.
+## 硬件与构建
 
-## Hardware & build
+- ESP8266，4 MB 闪存，240×240 ST7789，无 PSRAM；USB-C 仅供电。
+- 背光 GPIO5 是低电平有效，PWM 0 最亮、1023 关闭。
+- 该面板默认需要 `tft.invertDisplay(true)`，设置允许不同面板版本调整。
+- TFT 引脚：MOSI=13、SCLK=14、DC=0、RST=2、CS=-1；SPI 40 MHz。
+- 默认 CPU 为 160 MHz。
+- 当前链接脚本 `eagle.flash.4m1m.ld`：应用上限 1044464 字节；LittleFS 位于 `0x300000`，长度 `0xFA000`。中间区域用于 OTA，不能误称可执行的 3 MB 应用分区。
+- 用 `python -m platformio run -e nodemcuv2` 构建固件，`-t buildfs` 构建文件系统。发布包由 `python tools/package.py` 生成。
 
-- **Target**: GeekMagic SmallTV-Ultra. ESP8266, 4 MB flash, ST7789
-  240×240 LCD. Backlight on GPIO5 is **active-low PWM** (`analogWrite 0` = full bright).
-- **PlatformIO**: `pio run -e nodemcuv2` for firmware,
-  `pio run -e nodemcuv2 -t buildfs` for LittleFS image (`data/` → `/`).
-  Version: `-D FW_VERSION` in `platformio.ini`.
-- **mDNS**: `glimmer.local`.
-- **No PSRAM, ~30 KB free heap** at idle. Don't try to allocate a full
-  240×240 16bpp framebuffer (~115 KB).
+## 刷写顺序
 
-## OTA flash workflow
+固件先刷，文件系统后刷。原厂固件依赖自己的字体和配置，先替换文件系统会导致启动失败。刷文件系统会清除 `/config.json`，先通过 `/api/export` 导出，完成后连接 `glimmer-setup`，通过中文页面或 `/api/import` 恢复。
 
-Prebuilt `firmware.bin` / `littlefs.bin` are published by CI
-(`.github/workflows/build.yml`) to the rolling `latest` release —
-`https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin`.
-Download those instead of building (steps 2–3) when flashing committed code;
-build locally only for uncommitted changes.
+`/update` 的上传字段必须是 `firmware` 或 `filesystem`。合并镜像仅用于 UART，不可上传为 OTA 固件。
 
-```bash
-# 1. Back up config BEFORE any uploadfs (it wipes /config.json)
-curl -s -o /tmp/glimmer-config-backup.json http://<device-ip>/api/export
+## 字体缓存
 
-# 2. Build
-pio run -e nodemcuv2
-pio run -e nodemcuv2 -t buildfs
+调用 `tft.loadFont("fonts/<name>", LittleFS)`。不显式传 `LittleFS` 会默认走 SPIFFS 并静默失效。使用 `Display::useFont()` 管理单一缓存；TLS 调用前用 `Display::releaseFont()` 释放缓存以便 BearSSL 分配握手内存。
 
-# 3. Flash firmware (does NOT wipe FS)
-curl -F "firmware=@.pio/build/nodemcuv2/firmware.bin"   http://<device-ip>/update
+VLW 格式大端：24 字节头；每个字形 28 字节记录；最后是灰度逐行位图。字体生成器 `tools/genfonts.py` 默认单色栅格化，只保留六个实际使用的字体。
 
-# 4. Flash filesystem (DOES wipe FS — device reboots into AP mode)
-curl -F "filesystem=@.pio/build/nodemcuv2/littlefs.bin" http://<device-ip>/update
-```
+## 页面与画廊
 
-After step 4, device broadcasts AP `glimmer-setup` at `192.168.4.1`. Join
-the AP, then restore config:
+`draw()` 用于激活时的绘制，普通页面可以清屏；`tick()` 每 200 毫秒调用，只更新变化区域。画廊预先合成 RGB565 扫描行并上传，既不直接叠加中间条纹，也不先清屏。使用 `setSwapBytes(true)` 后恢复原状态，确保扫描行字节顺序正确。
 
-```bash
-curl -X POST -H 'Content-Type: application/json' \
-     --data-binary @/tmp/glimmer-config-backup.json \
-     http://192.168.4.1/api/import
-```
+画廊种子重建原网络权重，神经元累加使用 double、输出存 Float32，以接近原 JS。不要引入 112 KB 权重矩阵或 115 KB 帧缓冲。保持生成过程中的 `yield()`，并用 `/api/state` 的 `gallery_decode_us` 在实机观察耗时。
 
-Device reboots and rejoins normal Wi-Fi. The form-field name on `/update`
-must be exactly `firmware` or `filesystem` (handled by
-`ESP8266HTTPUpdateServer`).
+`/api/gallery` 流式输出条纹，避免占用大型 JSON 缓冲；网页预览使用这些描述，不自行生成另一个宇宙。
 
-## VLW smooth fonts — the critical gotchas
+## 设置与运行时
 
-1. **Path**: `Display::useFont(name)` passes `"fonts/<name>"` to
-   `tft.loadFont(path, LittleFS)`. TFT_eSPI prepends `/` and appends
-   `.vlw`, so files must live at `/fonts/<name>.vlw` on LittleFS.
-2. **Filesystem**: TFT_eSPI defaults to `SPIFFS` if you call
-   `tft.loadFont(name)` with one arg — that's a silent fail on our
-   LittleFS panel. **Always pass `LittleFS` explicitly**:
-   `tft.loadFont(path, LittleFS)`.
-3. **Silent failure**: when loadFont can't find the file, it prints
-   to Serial then returns. Subsequent `drawString` falls back to
-   whatever font was loaded last — or the built-in GLCD 5×7 if
-   nothing was. This bug ate days during development.
-4. **Heap**: `Display::releaseFont()` frees the VLW cache before TLS
-   calls (BearSSL handshake needs ~25 KB peak).
+设置持久化必须同时修改存储、API 和网页。普通设置接口对秘密返回 `***`，回传掩码保持已有值，空字符串清除。导出备份故意包含秘密，说明要保管备份。
 
-## VLW file format (verified against TFT_eSPI Smooth_font.cpp)
+固定页与轮播都必须在保存后立即生效。至少保留一个可显示页面。时区为带符号分钟，UTC 的 0 是合法值；旧小时字段仅在读取旧备份时迁移。POSIX 时区符号与偏移方向相反，半小时时区也必须保留符号。
 
-Big-endian throughout.
+Wi-Fi 健康检查同时检查关联状态与非零 IP。失联后原地重置射频并重连，不能仅软件重启，否则可能不能恢复射频状态。没有凭据时保留配网热点。
 
-- Header (24 bytes): u32 glyphCount, u32 version (=11), u32 fontSize
-  (informational), u32 reserved (0), u32 ascent (top of "d"), u32
-  descent (bottom of "p").
-- Per glyph (28 bytes), sorted by codepoint: u32 codepoint, u32
-  bitmap_height, u32 bitmap_width, u32 xAdvance, i32 dY (offset
-  baseline→top, positive UP), i32 dX (offset cursor→left), u32 reserved.
-- Bitmap data: each glyph w×h bytes, grayscale 0..255 row-major.
+## 验证边界
 
-Generator: `tools/genfonts.py` (freetype-py). TTFs live in
-`tools/ttf/`. Re-run on host any time `FONT_MATRIX` changes.
-
-## Display polarity / panel quirks
-
-- `tft.invertDisplay(true)` is required for this panel. With it off,
-  colors appear cream/light. Exposed as `settings.invertDisplay`
-  (web UI toggle) in case a panel revision needs it flipped.
-- Theme `BG = 0x0000` (pure black) avoids the cyan-grey tint that
-  the design's `#0E0D12` produces on this panel's color tuning.
-
-## Channel architecture & PARTIAL REDRAW DISCIPLINE
-
-- `src/channels/channel.h` defines `Channel { name, enabled, draw, tick }`.
-- `kChannels[]` table in `main.cpp` registers all channels.
-- `draw(ctx)` — full repaint, ok to `Display::clear()`. Called once on
-  channel activation.
-- `tick(ctx)` — called at 5 Hz (every 200 ms) while channel is active.
-  **MUST NOT** call `Display::clear()` or `tft.fillScreen()`. Only
-  repaints regions whose cached values changed. See `ch_clock.cpp` and
-  `ch_home.cpp` for reference implementations.
-- Pattern: file-static cache vars (`s_hh`, `s_cl`, etc., with sentinel
-  defaults like `-1` or `-2.f`) + per-region `paintX(val)` helpers
-  that clear their own band and redraw. `draw()` seeds the cache at the
-  end so tick has a baseline.
-- **No animated transitions** between channels — animated wipes pull
-  attention on a desk display. `drawActive()` just calls `draw()`
-  directly. The ~80 ms full-screen clear is a brief cut, not a flash.
-
-## System screens (splash / connecting / OTA) — same discipline
-
-- `Display::drawSplash()`, `drawConnecting()`, `drawOtaProgress()` cache
-  their chrome state and only repaint the changed band. Call
-  `Display::resetSystemScreens()` from any non-system entry point so the
-  next system-screen render paints chrome from scratch.
-
-## Settings round-trip
-
-Adding a new persisted setting requires touching **four** files:
-
-1. `src/core/storage.h` — add field to `Settings` struct with default.
-2. `src/core/storage.cpp` — load with `doc["snake_key"] | default`,
-   save with `doc["snake_key"] = s.field`.
-3. `src/core/web.cpp` — add to `handleApiGetSettings` (camelCase),
-   `applyIfPresent` (camelCase). Apply runtime-mutable values
-   (brightness, invertDisplay, tzOffset) immediately after
-   `Storage::save`.
-4. `data/web/index.html` — add input/checkbox with `x-model="settings.fieldName"`.
-
-`recomputeActive()` is called every rotation tick so settings toggles
-take effect within one slide.
-
-## pixelBar design
-
-10 discrete segments separated by 1-px BG gaps. Each segment is fully
-lit or fully empty. **No partial fills** — that was causing two
-near-100% bars (e.g., 92% and 99%) to appear to "cross" each other at
-the right edge. With discrete segments, 92% and 99% both render as
-9-of-10 lit (no partial 10th). Threshold: lit if `pct > i*10`.
-
-## Common pitfalls
-
-- **clangd noise**: clangd doesn't have PlatformIO build context, so
-  it screams about missing `Arduino.h`, `TFT_eSPI.h`, `uint16_t`, etc.
-  Ignore — the actual `pio run` build is what matters.
-- **`uploadfs` wipes config**: always export + restore via setup AP.
-- **Avoid sleep loops** in build/flash scripts; the build hooks
-  notify on completion. For "wait for device to come back online" a
-  short polling loop with `curl --max-time` is fine.
-- **TLS auth errors**: an `Auth -1` / `Auth -2` from a channel usually
-  means BearSSL handshake failed under heap pressure. The `tlsGet`
-  helper in `src/data/api.cpp` calls `Display::releaseFont()` before
-  the handshake to free ~5 KB — keep that.
-
-## Where the design lives
-
-The visual design (palette, type, channel layouts) is in the
-`/tmp/smalltv-design/smalltv/project/screens.jsx` archive — not in this
-repo. The relevant tokens (palette + font names) are mirrored in:
-- `src/core/theme.h` (RGB565 color constants matching design vars)
-- `data/fonts/*.vlw` (regenerated at design-spec pixel sizes)
+主机对照验证的是实际共用的画廊引擎，上游 JS 模块保持不变。浏览器测试模拟 API，只验证网页行为。无物理设备和凭据时不要声称已经刷写、实测 LCD 或在线验证额度。

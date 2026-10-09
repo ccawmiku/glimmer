@@ -35,25 +35,15 @@ namespace Display {
     // ── Typography (VLW bitmap fonts from LittleFS) ──
     // Available VLW fonts:
     //   "VT323-86"        clock digits, hero numerics
-    //   "VT323-64"        large numerics
+
     //   "VT323-44"        medium numerics (Antigravity/Codex %)
     //   "VT323-32"        small numerics + retro headlines
     //   "Silkscreen-16"   status-bar titles, section labels (TITLE)
     //   "Silkscreen-12"   compact headings
-    //   "PixelifySans-22" soft headlines (greetings, friendly copy)
-    //   "PixelifySans-14" softer body
     //   "DMMono-11"       tabular data, IP/RSSI/uptime rows (BODY)
     //
-    // FontTier shortcuts (Display::drawText uses these). For per-screen tuning,
-    // call useFont() directly with a name from the list above.
-    enum FontTier { HUGE, TITLE, BODY };
-    void useFont(const char* name);          // 1-slot cache; ~50ms switch
-    void releaseFont();                      // drop the loaded font (~2-5 KB free)
-    void setFont(FontTier t);
-    void drawText(const char* s, int x, int y, uint16_t color, FontTier t,
-                  uint8_t datum = MC_DATUM, uint16_t bg = 0x1062);   // bg = Theme::BG
-    int  textWidth(const char* s, FontTier t);
-    int  fontHeight(FontTier t);
+    void useFont(const char* name);
+    void releaseFont();
 
     // ── Design-system primitives (added v0.8) ──
     //

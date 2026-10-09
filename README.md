@@ -1,247 +1,74 @@
-<p align="center">
-  <img src="./docs/hero.jpg" alt="three glimmer devices on a desk, showing CODEX usage, HOME dashboard, and CLAUDE usage" width="100%">
-</p>
+# 小电视：时间、额度与潜在空间画廊
 
-# glimmer
+适用于 **GeekMagic SmallTV-Ultra（ESP8266、4 MB 闪存、240×240 ST7789）** 的精简固件，基于 [Avinava/glimmer](https://github.com/Avinava/glimmer) 改造。
 
-> A pixel-art always-on desk widget. Custom firmware for the **GeekMagic
-> SmallTV-Ultra** that rotates through glanceable channels — Antigravity / Codex
-> usage, clock, weather, push cards — with crisp retro typography on a
-> 240×240 panel.
+只保留四个屏幕页面：
 
----
-
-## What it shows
-
-| Channel | What |
+| 页面 | 内容 |
 |---|---|
-| **Home** | At-a-glance clock + weather + Antigravity/Codex usage meters + 24-hour timeline |
-| **Clock** | Big VT323 digital clock, day-of-week, greeting |
-| **Weather Now** | Hero temp, feels/humidity/wind, 3-day mini cards |
-| **5-day Forecast** | Range-bar rows showing min/max + condition |
-| **Antigravity usage**| 5-hour window % + weekly % + reset countdowns (Blue theme) |
-| **Codex usage** | Primary % + secondary % + credits/reset |
-| **AI Today** | Combined Antigravity+Codex card |
-| **Info** | IP / SSID / signal / uptime / heap / CPU / firmware |
-| **Push cards** | One-shot notification cards via `POST /push` |
+| 时间与额度 | 本地时间、日期、反重力与 Codex 剩余额度、当天时间条 |
+| 反重力额度 | 主要与次要额度、重置倒计时、24 小时额度记录 |
+| 设备状态 | 网络地址、网络名称、信号、连接状态、运行时间、可用内存、固件版本 |
+| 潜在空间画廊 | 每次重新生成随机网络、隐向量、颜色和横纵条纹 |
 
-All channels render via region-based partial repaints — no flickering
-between data updates.
+控制网页全部采用中文，分为“设备状态”“网络与额度”“屏幕设置”“备份与刷写”。可以轮播四页，也可以关闭自动轮播，固定显示一页。画廊只有**画面刷新间隔**一个专属设置，范围 1–86400 秒，默认 10 秒；不再提供成长、逐条过渡、逐维过渡、色板或轴向控制。设备隐藏画廊时不计算新画面，重新进入时按刷新间隔决定是否生成。
 
-## Quick start — flash the prebuilt binaries (no toolchain)
+天气、预报、独立时钟、独立 Codex 页、综合额度页、推送卡片、MCP、生日与个性化问候、夜间亮度功能及相关设置和资源已移除。Codex 数据接入保留，因为时间与额度页需要它。
 
-Every push to `main` is built by CI and published to the
-**[`latest`](https://github.com/Avinava/glimmer/releases/tag/latest)**
-release, so you don't need PlatformIO to flash a device:
+## 画面示例
 
-```bash
-# Grab the latest CI-built images
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin
+下图是中文面板的浏览器验证截图；画廊图由与固件共用的引擎生成，并非实机拍照。
 
-# Flash a freshly-stocked SmallTV-Ultra (over your home LAN). Firmware FIRST:
-DEVICE_IP=<find via arp or device screen>
-curl -F "firmware=@firmware.bin"   http://$DEVICE_IP/update
-curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
+![中文控制面板](docs/assets/control-panel.png)
 
-# Device reboots into glimmer's setup AP. Connect to "glimmer-setup" Wi-Fi
-# (open, no password) and visit http://192.168.4.1/ to enter your home
-# Wi-Fi credentials.
-```
+![四个独立随机宇宙](docs/assets/gallery-examples.png)
 
-Want a specific release instead of the rolling latest? Each `v*` tag has its
-own assets under **[Releases](https://github.com/Avinava/glimmer/releases)**.
+## 直接刷写
 
-Prefer to build from source? See [Development](#development) below
-(`pio run` + `pio run -t buildfs`).
+下载 [本仓库发布文件](https://github.com/ccawmiku/glimmer/releases)中的 `glimmer-0.21.0-cn-gallery.zip`，解压后按照 [中文刷写说明](FLASHING.md)操作。包中包含：
 
-For the full flashing dance (including the one-time "get the stock
-firmware onto your Wi-Fi first" step), see **[FLASHING.md](./FLASHING.md)**.
+- `firmware.bin`：通过设备的固件上传入口刷写。
+- `littlefs.bin`：通过设备的文件系统上传入口刷写，包含中文网页和所需字体。
+- `flash-all.bin`：串口专用合并镜像，从 `0x0` 写入；不要上传到网页固件入口。
+- `刷写说明.md`、`manifest.json`、`SHA256SUMS`。
 
-## Hand this to Claude Code
+**先刷固件，再刷文件系统。文件系统更新会清除设置，请先导出备份。** 两个文件必须来自同一次构建。
 
-You can let [Claude Code](https://claude.com/code) drive the flash for
-you end-to-end — it will detect whether the device is brand-new (stock
-firmware) or already on glimmer, walk you through joining the right
-Wi-Fi AP, verify each step before continuing, build, OTA-flash, and
-restore your config.
+设备配网热点名称为 `glimmer-setup`，设置地址为 `http://192.168.4.1/`。正常连接后使用设备 IP 或 `http://glimmer.local/`。无线网络仅支持 2.4 GHz。北京时间默认偏移为 480 分钟，UTC 填 0；旧版备份的小时偏移会迁移为分钟偏移。
 
-### From a clone of this repo
+## 画廊移植
 
-```
-> /skill flash-device
-```
+来源是较新的 [ccawmiku/latent-art-wallpaper 的 dev 分支](https://github.com/ccawmiku/latent-art-wallpaper/tree/dev)，固定采用原版默认的横纵条纹、自动遮盖顺序、经典 32 色自动选色。保留完整 `192→96→64→64` 随机解码网络，权重通过种子即时重建，不在设备中常驻 112 KB 的权重矩阵。每行只需 480 字节缓冲，避免分配 115 KB 的全屏缓冲区，也避免先清屏再画条纹造成闪白。
 
-### From anywhere (paste this prompt)
+网页预览读取设备生成的条纹描述，展示设备当前实际生成的画廊画面。[移植评估与验证记录](docs/GALLERY_PORT.md)说明了内存占用、参照验证和实机验证边界。
 
-> Please flash glimmer firmware onto my GeekMagic SmallTV-Ultra.
-> The skill at
-> **https://github.com/Avinava/glimmer/blob/main/.claude/skills/flash-device.md**
-> has the full walkthrough — fetch it, then walk me through:
->
-> 1. Detect device state (brand-new stock vs already on glimmer).
-> 2. Help me join the correct Wi-Fi AP (`GIFTV` for stock,
->    `glimmer-setup` after first glimmer flash).
-> 3. Verify connectivity at every step (curl `/api/state` etc.) —
->    don't assume; always confirm with me before each handoff.
-> 4. Download the prebuilt `firmware.bin` + `littlefs.bin` from the
->    [`latest`](https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin)
->    release (no toolchain needed; build locally only for unpushed changes).
-> 5. OTA-flash firmware first, then filesystem.
-> 6. After full flash, restore my config from backup OR walk me
->    through first-time setup (Wi-Fi → tokens → channels → personalization).
->
-> My device's current location: `<plugged in next to me / on the LAN at
-> <ip>/glimmer.local>`. My laptop OS: `<macOS / Linux / Windows>`.
-
-Claude will read the skill file, build the artifacts, and run the OTA
-dance with you. Don't run any of the curl commands yourself unless
-Claude asks — the order matters (always flash firmware first; filesystem
-flash wipes `/config.json`, needs the AP-rejoin step to recover).
-
-## Hardware
-
-- **MCU**: ESP8266, 80–160 MHz, ~30 KB free RAM
-- **Display**: 240×240 ST7789V IPS TFT (requires `invertDisplay(true)`)
-- **Backlight**: PWM on GPIO5, **active-low** (0 = full bright, 1023 = off)
-- **Flash**: 4 MB total → 3 MB sketch / 1 MB LittleFS (`eagle.flash.4m1m.ld`)
-- **USB-C**: power only — no data wired to MCU
-- **Network**: Wi-Fi 2.4 GHz only
-
-### Known limitations
-
-- ESP8266 BearSSL TLS is tight on heap — glimmer drops the VLW font
-  cache before TLS calls (`Display::releaseFont()`). Don't add more
-  long-lived heap allocations along the Antigravity/Codex fetch path.
-- No PSRAM, no DMA double-buffer — channel rotation is a ~80 ms instant
-  cut. Within-channel updates are region-based, smooth.
-- Display panel needs the inversion bit; the web UI exposes
-  `Invert colors` toggle in case a panel revision differs.
-
-## Development
-
-### Build
+## 从源码构建
 
 ```bash
-pio run -e nodemcuv2              # firmware
-pio run -e nodemcuv2 -t buildfs   # filesystem
+python -m pip install platformio
+python -m platformio run -e nodemcuv2
+python -m platformio run -e nodemcuv2 -t buildfs
+python tools/package.py
 ```
 
-### Regenerate fonts
+输出在 `dist/`。硬件平台和两项固件依赖已固定版本；网页无需构建、外部 CDN 或额外运行库。
 
-The repo ships with pre-built VLW bitmap fonts (`data/fonts/*.vlw`)
-sized to match the design spec. To add a size or family, edit
-`tools/genfonts.py`'s `FONT_MATRIX`, drop the TTF in `tools/ttf/`, and:
+画廊对照测试需要 Python、Node.js 和 g++：
 
 ```bash
-pip install freetype-py
-python3 tools/genfonts.py
-pio run -e nodemcuv2 -t buildfs
+python tests/verify_gallery.py
 ```
 
-Or trigger via Claude Code:
+中文网页的浏览器交互验证额外需要开发依赖：
 
+```bash
+npm ci
+npx playwright install chromium
+npm run test:web
 ```
-> /skill regenerate-fonts
-```
 
-### Add a channel
+浏览器测试模拟设备 API，用于验证网页行为；不会声称已经访问物理设备。测试输出截图保存在 `artifacts/`。神经网络和渲染对照直接执行与固件共用的 C++ 实现，与保留的上游 JavaScript 模块比较。
 
-1. Create `src/channels/ch_<name>.cpp` with `chXxxEnabled`, `chXxxDraw`,
-   and (optional) `chXxxTick`.
-2. Add a row to `kChannels[]` in `src/main.cpp`.
-3. (Optional) Add a `showXxx` toggle in `src/core/storage.{h,cpp}`,
-   `src/core/web.cpp`, and `data/web/index.html`.
+## 许可
 
-See `src/channels/ch_clock.cpp` for the reference partial-redraw
-implementation.
-
-## Getting your tokens
-
-glimmer reads your usage by querying the Antigravity user quota API and
-chatgpt.com wham usage API.
-You extract each credential from your local config or browser's DevTools, then **set it on
-the Tokens page in the device web UI** — open `http://glimmer.local/` (or
-`http://192.168.4.1/` while the device is in setup-AP mode) and go to
-**Settings → Tokens**.
-
-### Antigravity — Google OAuth Refresh Token
-
-**Get it:**
-Locate your local Antigravity OAuth token at:
-`~/.gemini/antigravity-cli/antigravity-oauth-token`
-Copy the `refresh_token` (`1//...`) or direct `access_token` (`ya29...`).
-
-**Set it:**
-Paste it on the Tokens page under **Antigravity → OAuth Refresh Token**. Glimmer will automatically exchange the refresh token with Google OAuth and keep it renewed!
-
-### Codex — Bearer token + device ID
-
-The token must come from a **`backend-api`** request, *not* a CDN/asset
-request — CDN requests don't carry an `authorization` header.
-
-**Get it:**
-
-1. Open DevTools on `chatgpt.com` → **Network** tab
-2. Filter for `backend-api` and click any request (conversations, usage, etc.)
-3. From that request's headers, copy two values:
-   - `authorization: Bearer eyJhbGci…` → everything after `Bearer ` is your **token**
-   - `oai-device-id: …` → your **device ID**
-
-**Set them:** paste both on the Tokens page under **Codex → Bearer token**
-and **Device ID**.
-
-> **Shortcut:** right-click the `backend-api` request → **Copy → Copy as
-> cURL** and hand the whole curl to Claude Code — it pulls both values and
-> pushes them to the device for you (`POST /api/settings`).
-
-> **Note:** the Codex bearer token is short-lived (~24 h). When the Codex
-> channel shows a `401`, repeat these steps with a fresh request. The Antigravity
-> Google OAuth refresh token automatically renews its access token.
-
-## Disclaimer — personal & educational use only
-
-glimmer is shared for **personal experimentation and educational
-purposes**.
-
-It reads your own Antigravity and Codex usage by sending **your own
-credentials** to endpoints used to power usage statistics.
-**These endpoints may change without notice.**
-
-By installing or modifying this firmware you accept full responsibility
-for:
-
-- Your own compliance with the relevant Terms of Service.
-- Anything that happens on your own devices, accounts, or network.
-- Securing your credentials — they are stored on the device's LittleFS
-  partition in plaintext (the device runs on your home Wi-Fi behind
-  your router).
-
-This is a hobbyist project shared as-is, with no warranty, no support
-guarantee, and no claim of fitness for any particular purpose. **Do not
-redistribute as a commercial product. Do not use this to access accounts
-that are not yours.**
-
-## License
-
-MIT. See [LICENSE](./LICENSE). The MIT license governs the code in
-this repository; it does **not** waive any obligations you may have
-under third-party Terms of Service (Anthropic, OpenAI, etc.). See the
-Disclaimer above.
-
-## Acknowledgments
-
-- Inspired by [Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter) by Hermann Björgvin.
-- GeekMagic SmallTV-Ultra — the hardware.
-- [TFT_eSPI](https://github.com/Bodmer/TFT_eSPI) — display driver.
-- [VT323](https://fonts.google.com/specimen/VT323),
-  [Silkscreen](https://fonts.google.com/specimen/Silkscreen),
-  [DM Mono](https://fonts.google.com/specimen/DM+Mono),
-  [Pixelify Sans](https://fonts.google.com/specimen/Pixelify+Sans)
-  — typography (all OFL).
-
----
-
-<p align="center">
-  <sub>Designed and built with <a href="https://claude.com/code">Claude Code</a>.</sub>
-</p>
+保留原 glimmer 的 MIT 许可。画廊模块来自 CCAW 的 MIT 项目，归属与许可证见 [第三方说明](THIRD_PARTY.md)和 [参照模块许可证](tests/reference/LICENSE)。

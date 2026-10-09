@@ -10,3 +10,8 @@
 secrets.h
 config.json
 *.config.json
+
+artifacts/
+dist/
+node_modules/
+__pycache__/

@@ -45,27 +45,31 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify gallery against upstream renderer
+        run: python tests/verify_gallery.py
+
       - name: Build firmware
         run: pio run -e nodemcuv2
 
       - name: Build filesystem (LittleFS)
         run: pio run -e nodemcuv2 -t buildfs
 
-      - name: Stage binaries
+      - name: Stage binaries and flash package
         id: stage
         run: |
-          mkdir -p dist
-          cp .pio/build/nodemcuv2/firmware.bin dist/firmware.bin
-          cp .pio/build/nodemcuv2/littlefs.bin dist/littlefs.bin
-          ver=$(grep -m1 FW_VERSION platformio.ini | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.-]*' || true)
-          echo "version=${ver:-unknown}" >> "$GITHUB_OUTPUT"
-          ls -la dist
+          python tools/package.py
+          ver=$(python -c 'import json; print(json.load(open("dist/manifest.json"))["version"])')
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Upload CI artifact
         uses: actions/upload-artifact@v4
         with:
           name: glimmer-binaries
-          path: dist/*.bin
+          path: dist/*
           retention-days: 30
 
       # ── Rolling `latest` release — every push to main ──
@@ -87,14 +91,19 @@ jobs:
             Auto-built from `main` (`${{ github.sha }}`), firmware **${{ steps.stage.outputs.version }}**.
 
             First-time flash — no toolchain needed (see [FLASHING.md](../../blob/main/FLASHING.md)).
-            Flash filesystem first, then firmware:
+            先刷固件，再刷文件系统。刷写文件系统前导出配置备份：
             ```bash
             curl -L -O https://github.com/${{ github.repository }}/releases/download/latest/littlefs.bin
             curl -L -O https://github.com/${{ github.repository }}/releases/download/latest/firmware.bin
-            curl -F "filesystem=@littlefs.bin" http://<device-ip>/update
             curl -F "firmware=@firmware.bin"   http://<device-ip>/update
+            # 等待重启；若进入配网热点，把地址改为 192.168.4.1。
+            curl -F "filesystem=@littlefs.bin" http://<device-ip>/update
             ```
-          files: dist/*.bin
+          files: |
+            dist/*.bin
+            dist/*.zip
+            dist/SHA256SUMS
+            dist/manifest.json
           make_latest: 'true'
           prerelease: false
 
@@ -109,6 +118,10 @@ jobs:
 
             Download `firmware.bin` / `littlefs.bin` below, or always grab the
             newest main build from the [`latest`](../../releases/download/latest/firmware.bin) release.
-          files: dist/*.bin
+          files: |
+            dist/*.bin
+            dist/*.zip
+            dist/SHA256SUMS
+            dist/manifest.json
           # Don't steal the "Latest" pointer from the rolling main build.
           make_latest: 'false'

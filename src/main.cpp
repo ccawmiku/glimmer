@@ -19,40 +19,17 @@
 #include "web.h"
 #include "api.h"
 #include "channel.h"
-#include "mood.h"
 
-// ── Channel registry — declared in their own .cpp files ─────────────────────
-extern bool chAntigravityEnabled(const ChannelCtx&); extern void chAntigravityDraw(const ChannelCtx&);
-extern bool chCodexEnabled (const ChannelCtx&);  extern void chCodexDraw (const ChannelCtx&);
-extern bool chClockEnabled (const ChannelCtx&);  extern void chClockDraw (const ChannelCtx&);
-extern bool chInfoEnabled  (const ChannelCtx&);  extern void chInfoDraw  (const ChannelCtx&);
-extern bool chWeatherEnabled (const ChannelCtx&); extern void chWeatherDraw (const ChannelCtx&);
-extern bool chPushEnabled    (const ChannelCtx&); extern void chPushDraw    (const ChannelCtx&);
-extern bool chHomeEnabled    (const ChannelCtx&); extern void chHomeDraw    (const ChannelCtx&);
-extern bool chAiDashEnabled  (const ChannelCtx&); extern void chAiDashDraw  (const ChannelCtx&);
-extern bool chForecastEnabled(const ChannelCtx&); extern void chForecastDraw(const ChannelCtx&);
-extern void chPushTick       (const ChannelCtx&);
-extern void chClockTick      (const ChannelCtx&);
-extern void chHomeTick       (const ChannelCtx&);
-extern void chAntigravityTick(const ChannelCtx&);
-extern void chCodexTick      (const ChannelCtx&);
-extern void chAiDashTick     (const ChannelCtx&);
-extern void chWeatherTick    (const ChannelCtx&);
-extern void chForecastTick   (const ChannelCtx&);
-extern void chInfoTick       (const ChannelCtx&);
-extern void weatherTick      (const Settings&);
-
+// Four page options; no unused channels are linked.
+extern bool chHomeEnabled(const ChannelCtx&); extern void chHomeDraw(const ChannelCtx&); extern void chHomeTick(const ChannelCtx&);
+extern bool chAntigravityEnabled(const ChannelCtx&); extern void chAntigravityDraw(const ChannelCtx&); extern void chAntigravityTick(const ChannelCtx&);
+extern bool chInfoEnabled(const ChannelCtx&); extern void chInfoDraw(const ChannelCtx&); extern void chInfoTick(const ChannelCtx&);
+extern bool chGalleryEnabled(const ChannelCtx&); extern void chGalleryDraw(const ChannelCtx&); extern void chGalleryTick(const ChannelCtx&);
 static const Channel kChannels[] = {
-    //  name           enabled                 draw                     tick
-    { "Push",        chPushEnabled,        chPushDraw,        chPushTick        },
-    { "Home",        chHomeEnabled,        chHomeDraw,        chHomeTick        },
+    { "Home", chHomeEnabled, chHomeDraw, chHomeTick },
     { "Antigravity", chAntigravityEnabled, chAntigravityDraw, chAntigravityTick },
-    { "Codex",       chCodexEnabled,       chCodexDraw,       chCodexTick       },
-    { "AI",          chAiDashEnabled,      chAiDashDraw,      chAiDashTick      },
-    { "Weather",     chWeatherEnabled,     chWeatherDraw,     chWeatherTick     },
-    { "Forecast",    chForecastEnabled,    chForecastDraw,    chForecastTick    },
-    { "Clock",       chClockEnabled,       chClockDraw,       chClockTick       },
-    { "Info",        chInfoEnabled,        chInfoDraw,        chInfoTick        },
+    { "Info", chInfoEnabled, chInfoDraw, chInfoTick },
+    { "Gallery", chGalleryEnabled, chGalleryDraw, chGalleryTick },
 };
 static constexpr int kChannelCount = sizeof(kChannels) / sizeof(kChannels[0]);
 
@@ -63,13 +40,14 @@ static bool            g_apMode      = false;
 static AntigravityData g_antigravity;
 static CodexData       g_codex;
 
-static int         g_activeIdx[8];        // indices into kChannels[] that are currently enabled
+static int         g_activeIdx[kChannelCount];        // indices into kChannels[] that are currently enabled
 static int         g_activeCount = 0;
 static int         g_activePtr   = 0;     // which active channel is on screen
 
 static uint32_t    g_lastRefresh = 0;
 static uint32_t    g_lastSlide   = 0;
-static uint32_t    g_lastTick    = 0;
+static bool g_refreshRequested = false;
+static bool g_settingsDirty = false;
 
 // ── Accessors for web.cpp / ch_info.cpp ─────────────────────────────────────
 
@@ -81,7 +59,9 @@ int  mainEnabledCount()    { return g_activeCount; }
 int  mainTotalCount()      { return kChannelCount; }
 uint32_t mainLastRefreshMs() { return g_lastRefresh; }
 uint32_t mainRefreshIntervalMs() { return (uint32_t)g_settings.refreshMin * 60000UL; }
-void mainTriggerRefresh()  { g_lastRefresh = 0; }
+void mainTriggerRefresh() { g_refreshRequested = true; }
+void mainSettingsChanged() { g_settingsDirty = true; }
+const CodexData* mainCodexData() { return &g_codex; }
 const char* mainEnabledChannelName(int idx) {
     if (idx < 0 || idx >= g_activeCount) return nullptr;
     return kChannels[g_activeIdx[idx]].name;
@@ -97,10 +77,14 @@ static ChannelCtx makeCtx() {
 static void recomputeActive() {
     ChannelCtx ctx = makeCtx();
     g_activeCount = 0;
-    for (int i = 0; i < kChannelCount && g_activeCount < 8; i++) {
+    for (int i = 0; i < kChannelCount && g_activeCount < kChannelCount; i++) {
         if (kChannels[i].enabled(ctx)) g_activeIdx[g_activeCount++] = i;
     }
     if (g_activePtr >= g_activeCount) g_activePtr = 0;
+    if (!g_settings.autoRotate) {
+        for (int i = 0; i < g_activeCount; ++i)
+            if (g_activeIdx[i] == g_settings.selectedPage) g_activePtr = i;
+    }
 }
 
 static void drawActive() {
@@ -117,13 +101,12 @@ static void drawActive() {
 }
 
 // 2-px progress strip at y=230. Fills in current channel's theme color as
-// the slide window elapses. Hidden while Push card is active (Push is
-// interruption, not rotation).
+// the slide window elapses. Hidden on the full-screen gallery.
 static void drawIndicator(uint32_t now) {
     using namespace Layout;
     if (g_apMode || g_activeCount <= 1) return;
     const char* name = kChannels[g_activeIdx[g_activePtr]].name;
-    if (!strcmp(name, "Push")) return;
+    if (!g_settings.autoRotate || !strcmp(name, "Gallery")) return;
 
     uint32_t slideMs = (uint32_t)g_settings.channelSec * 1000UL;
     uint32_t elapsed = now - g_lastSlide;
@@ -195,17 +178,11 @@ static void refreshAll() {
     if (!g_settings.agToken.isEmpty()) {
         Api::fetchAntigravity(g_settings, g_antigravity);
         apiYieldGap();
-    }
+    } else g_antigravity = AntigravityData{};
     if (!g_settings.codexToken.isEmpty()) {
         Api::fetchCodex(g_settings, g_codex);
         apiYieldGap();
-    }
-    // Fetch weather if ANY channel that uses it is enabled (Home + Forecast also
-    // consume the snapshot, not just the Weather channel itself).
-    if (g_settings.showWeather || g_settings.showHome || g_settings.showForecast) {
-        weatherTick(g_settings);
-        apiYieldGap();
-    }
+    } else g_codex = CodexData{};
     recomputeActive();
     drawActive();
 }
@@ -232,17 +209,12 @@ void setup() {
         MDNS.begin(MDNS_HOSTNAME);
         Display::drawSplash("Syncing time");
         configTime(0, 0, "pool.ntp.org", "time.google.com");
-        // POSIX TZ: tzMinutes (signed minutes east of UTC) takes precedence
-        // over the legacy hour-only tzOffset. POSIX expresses offset as
+        // POSIX TZ expresses signed minutes east of UTC as the
         // "minutes to ADD to local time to get UTC" → invert the sign.
-        int signedMin = (g_settings.tzMinutes != 0)
-                      ? (int)g_settings.tzMinutes
-                      : (int)g_settings.tzOffset * 60;
-        int posixMin  = -signedMin;
-        int posixH    = posixMin / 60;
-        int posixM    = posixMin % 60; if (posixM < 0) posixM = -posixM;
-        char tzBuf[16];
-        snprintf(tzBuf, sizeof(tzBuf), "UTC%+d:%02d", posixH, posixM);
+        int signedMin = g_settings.tzMinutes;
+        int posixMin = -signedMin;
+        char tzBuf[20];
+        snprintf(tzBuf, sizeof(tzBuf), "UTC%c%d:%02d", posixMin < 0 ? '-' : '+', abs(posixMin) / 60, abs(posixMin) % 60);
         setenv("TZ", tzBuf, 1);
         tzset();
         for (int i = 0; i < 20 && time(nullptr) < 1000000000L; i++) delay(250);
@@ -251,13 +223,6 @@ void setup() {
     Web::begin(g_settings);
 
     if (!g_apMode) {
-        // Personalized greeting splash
-        if (!g_settings.userName.isEmpty()) {
-            char greet[40];
-            snprintf(greet, sizeof(greet), "Hi, %s", g_settings.userName.c_str());
-            Display::drawSplash(greet);
-            delay(900);
-        }
         Display::drawSplash("Fetching...");
         refreshAll();
         g_lastRefresh = millis();
@@ -316,46 +281,22 @@ void loop() {
 
     // Periodic API refresh
     uint32_t refreshMs = (uint32_t)g_settings.refreshMin * 60000UL;
-    if (!g_apMode && now - g_lastRefresh >= refreshMs) {
+    if (!g_apMode && (g_refreshRequested || now - g_lastRefresh >= refreshMs)) {
+        g_refreshRequested = false;
         g_lastRefresh = now;
         tft.fillCircle(SCREEN_W - 6, 6, 3, Theme::CORAL);
         refreshAll();
         g_lastSlide = now;
     }
 
-    // If a push card is freshly active, snap to it immediately.
-    // When it expires, advance to the next channel right away.
-    static bool wasPushActive = false;
-    ChannelCtx ctx = makeCtx();
-    bool pushActive = chPushEnabled(ctx);
-    if (pushActive && !wasPushActive) {
+    // Apply saved page choices immediately, including when rotation is disabled.
+    if (!g_apMode && g_settingsDirty) {
+        g_settingsDirty = false;
         recomputeActive();
-        for (int i = 0; i < g_activeCount; i++) {
-            if (strcmp(kChannels[g_activeIdx[i]].name, "Push") == 0) {
-                g_activePtr = i; break;
-            }
-        }
+        for (int i = 0; i < g_activeCount; ++i)
+            if (g_activeIdx[i] == g_settings.selectedPage) g_activePtr = i;
         drawActive();
         g_lastSlide = now;
-    } else if (!pushActive && wasPushActive) {
-        recomputeActive();
-        drawActive();
-        g_lastSlide = now;
-    }
-    wasPushActive = pushActive;
-
-    // Auto-brightness every 60s
-    static uint32_t lastBright = 0;
-    if (now - lastBright >= 60000UL) {
-        lastBright = now;
-        time_t t = time(nullptr);
-        if (t > 1000000000L) {
-            struct tm tm; localtime_r(&t, &tm);
-            int b = Mood::suggestedBrightness(tm.tm_hour, g_settings.brightness,
-                                              g_settings.nightDim, g_settings.nightBright,
-                                              g_settings.nightStart, g_settings.nightEnd);
-            Display::setBrightness(b);
-        }
     }
 
     // Channel auto-rotate — instant cut (no transition animation). Premium
@@ -367,7 +308,7 @@ void loop() {
         g_lastSlide = now;
         // Pick up any settings toggles before deciding what's next.
         recomputeActive();
-        g_activePtr = (g_activePtr + 1) % g_activeCount;
+        if (g_activeCount > 0) g_activePtr = (g_activePtr + 1) % g_activeCount;
         drawActive();
     }
 

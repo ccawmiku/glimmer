@@ -5,9 +5,6 @@
 // Per channel.h's PARTIAL REDRAW DISCIPLINE — tick MUST NOT clear/fillScreen.
 //
 //   y=6..82    VT323-86 HH ink, ":" coral, MM amber          [hero clock]
-//   y=14..50   right column temp (VT323-32 INK, TR)          [weather]
-//   y=48..62   right column "feels XX°"  (DMMono-11 MUTED)
-//   y=62..76   right column condition word (DMMono-11 INK_DIM)
 //   y=92..104  date row "SUN MAY 17"
 //   y=108      dots divider
 //   y=114..128 CL meter row
@@ -21,27 +18,22 @@
 #include "display.h"
 #include "theme.h"
 #include "config.h"
-#include "weather.h"
-#include "weather_icons.h"
 #include <ESP8266WiFi.h>
 #include <time.h>
 #include <math.h>
 
-extern WeatherData* weatherSnapshotPtr();
 
 // ── File-static cache so tick() can diff vs last paint ──
 static int     s_hh = -1, s_mm = -1, s_dayHour = -1;
 static float   s_ag = -2.f, s_cx = -2.f;
 static int     s_loadDot = -1;
-static float   s_tempC = -999.f;
-static uint8_t s_code = 255;
+static int s_date = -1;
 // Clock x-geometry cached on first paint
 static bool    s_geomReady = false;
 static int     s_hhX = 8, s_colonX = 0, s_mmX = 0, s_digitW = 0;
 
 bool chHomeEnabled(const ChannelCtx& ctx) {
-    return ctx.settings && ctx.settings->showHome
-        && time(nullptr) > 1000000000L;
+    return ctx.settings && ctx.settings->showHome;
 }
 
 static void clockGeom() {
@@ -49,7 +41,7 @@ static void clockGeom() {
     Display::useFont("VT323-86");
     s_digitW = tft.textWidth("0");
     int colonW = tft.textWidth(":");
-    s_hhX = 8;
+    s_hhX = (SCREEN_W - (s_digitW * 4 + colonW)) / 2;
     s_colonX = s_hhX + s_digitW * 2;
     s_mmX = s_colonX + colonW;
     s_geomReady = true;
@@ -85,48 +77,15 @@ static void paintMM(int mm) {
     tft.drawString(b, s_mmX, 6);
 }
 
-static void paintWeatherTemp(const WeatherData* w, bool f) {
-    char tBuf[8];
-    if (w && w->valid)
-        snprintf(tBuf, sizeof(tBuf), "%.0f\xC2\xB0", Weather::toDisplay(w->tempC, f));
-    else
-        snprintf(tBuf, sizeof(tBuf), "--\xC2\xB0");
-    tft.fillRect(SCREEN_W - 86, 14, 80, 36, Theme::BG);
-    Display::useFont("VT323-32");
-    tft.setTextDatum(TR_DATUM);
-    tft.setTextColor(Theme::INK, Theme::BG);
-    tft.drawString(tBuf, SCREEN_W - 10, 14);
-}
-
-static void paintWeatherFeels(const WeatherData* w, bool f) {
-    char b[16];
-    if (w && w->valid) {
-        float fl = w->feelsC > -900 ? w->feelsC : w->tempC;
-        snprintf(b, sizeof(b), "feels %.0f\xC2\xB0", Weather::toDisplay(fl, f));
-    } else {
-        snprintf(b, sizeof(b), "feels --");
-    }
-    tft.fillRect(SCREEN_W - 86, 48, 80, 14, Theme::BG);
+static void paintDate(const struct tm& tmv, bool synced) {
+    tft.fillRect(0, 92, SCREEN_W, 14, Theme::BG);
+    char b[24];
+    if (synced) strftime(b, sizeof(b), "%Y-%m-%d", &tmv);
+    else snprintf(b, sizeof(b), "NTP syncing...");
     Display::useFont("DMMono-11");
-    tft.setTextDatum(TR_DATUM);
-    tft.setTextColor(Theme::MUTED, Theme::BG);
-    tft.drawString(b, SCREEN_W - 10, 48);
-}
-
-static void paintWeatherCondition(const WeatherData* w) {
-    tft.fillRect(SCREEN_W - 86, 62, 86, 34, Theme::BG);
-    if (w && w->valid) {
-        WeatherIcon::draw(SCREEN_W - 36, 62, w->code, Theme::SKY, 2);
-        Display::useFont("DMMono-11");
-        tft.setTextDatum(TR_DATUM);
-        tft.setTextColor(Theme::INK_DIM, Theme::BG);
-        tft.drawString(Weather::describe(w->code), SCREEN_W - 40, 78);
-    } else {
-        Display::useFont("DMMono-11");
-        tft.setTextDatum(TR_DATUM);
-        tft.setTextColor(Theme::INK_DIM, Theme::BG);
-        tft.drawString("--", SCREEN_W - 10, 62);
-    }
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(Theme::INK_DIM, Theme::BG);
+    tft.drawString(b, 10, 92);
 }
 
 static void paintMeter(int y, const char* tag, uint16_t tagColor,
@@ -195,7 +154,7 @@ static void paintHourStrip(int curHour) {
     tft.fillRect(curX - 1, stripY - 8, 3, 3, Theme::AMBER);
 
     // "Nh LEFT" right at y=154 (same line as TODAY label)
-    char leftBuf[12];
+    char leftBuf[24];
     snprintf(leftBuf, sizeof(leftBuf), "%dh LEFT", 23 - curHour);
     tft.fillRect(SCREEN_W - 80, 152, 76, 14, Theme::BG);
     Display::useFont("DMMono-11");
@@ -215,27 +174,12 @@ void chHomeDraw(const ChannelCtx& ctx) {
     struct tm tmv; localtime_r(&now, &tmv);
 
     // Hero clock
-    paintHH(tmv.tm_hour);
+    paintHH(now > 1000000000L ? tmv.tm_hour : 0);
     paintColon();
-    paintMM(tmv.tm_min);
+    paintMM(now > 1000000000L ? tmv.tm_min : 0);
 
-    // Weather column
-    WeatherData* w = weatherSnapshotPtr();
-    bool f = ctx.settings && ctx.settings->useFahrenheit;
-    paintWeatherTemp(w, f);
-    paintWeatherFeels(w, f);
-    paintWeatherCondition(w);
-
-    // Date row (static-ish, only changes day-over-day)
-    char dateBuf[24];
-    strftime(dateBuf, sizeof(dateBuf), "%a %b %d", &tmv);
-    for (int i = 0; dateBuf[i] && i < 20; i++) {
-        if (dateBuf[i] >= 'a' && dateBuf[i] <= 'z') dateBuf[i] -= 32;
-    }
-    Display::useFont("Silkscreen-12");
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(Theme::INK_DIM, Theme::BG);
-    tft.drawString(dateBuf, 10, 92);
+    paintDate(tmv, now > 1000000000L);
+    s_date = now > 1000000000L ? tmv.tm_yday : -1;
 
     Display::dotsDivider(10, 108, SCREEN_W - 20);
 
@@ -268,11 +212,10 @@ void chHomeDraw(const ChannelCtx& ctx) {
     tft.drawString(WiFi.localIP().toString(), SCREEN_W - 10, 200);
 
     // ── Seed cache ──
-    s_hh = tmv.tm_hour; s_mm = tmv.tm_min; s_dayHour = tmv.tm_hour;
+    s_hh = now > 1000000000L ? tmv.tm_hour : -1; s_mm = now > 1000000000L ? tmv.tm_min : -1; s_dayHour = tmv.tm_hour;
     s_ag = (ag < 0) ? -2.f : ag;
     s_cx = (cx < 0) ? -2.f : cx;
-    if (w && w->valid) { s_tempC = w->tempC; s_code = w->code; }
-    else               { s_tempC = -999.f; s_code = 255; }
+
 }
 
 // ── Tick: 5 Hz, region-only repaints ──
@@ -290,20 +233,7 @@ void chHomeTick(const ChannelCtx& ctx) {
         s_dayHour = tmv.tm_hour;
     }
 
-    // Weather (only repaint on meaningful change)
-    WeatherData* w = weatherSnapshotPtr();
-    bool f = ctx.settings && ctx.settings->useFahrenheit;
-    if (w && w->valid) {
-        if (fabsf(w->tempC - s_tempC) > 0.4f) {
-            paintWeatherTemp(w, f);
-            paintWeatherFeels(w, f);
-            s_tempC = w->tempC;
-        }
-        if (w->code != s_code) {
-            paintWeatherCondition(w);
-            s_code = w->code;
-        }
-    }
+    if (tmv.tm_yday != s_date) { paintDate(tmv, true); s_date = tmv.tm_yday; }
 
     // AI meters — chase dots while a side is still loading; else hysteresis on
     // ±0.4% so noise doesn't thrash.
