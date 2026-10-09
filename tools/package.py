@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 from datetime import datetime, timezone
 import zipfile
@@ -13,6 +14,36 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+def verify_arduino_image(firmware):
+    # Arduino elf2bin patches two CRC words after writing the segment checksums.
+    # Zero those words before verifying the original checksums and whole-image CRC.
+    raw = bytearray(firmware)
+    size, expected_crc = struct.unpack_from('<II', raw, 4096 + 16)
+    assert size == len(raw), 'Arduino CRC image length mismatch'
+    raw[4112:4120] = b'\0' * 8
+    table = []
+    for n in range(256):
+        c = n << 24
+        for _ in range(8):
+            c = ((c << 1) ^ 0x04c11db7 if c & 0x80000000 else c << 1) & 0xffffffff
+        table.append(c)
+    crc = 0xffffffff
+    for b in raw:
+        crc = ((crc << 8) ^ table[((crc >> 24) ^ b) & 255]) & 0xffffffff
+    assert crc == expected_crc, 'Arduino eboot CRC mismatch'
+    for start in (0, 4096):
+        assert raw[start] == 0xe9
+        pos, checksum = start + 8, 0xef
+        for _ in range(raw[start + 1]):
+            _, length = struct.unpack_from('<II', raw, pos)
+            pos += 8
+            assert pos + length <= len(raw), 'segment runs beyond image'
+            for b in raw[pos:pos + length]: checksum ^= b
+            pos += length
+        checksum_pos = pos + (15 - (pos - start) % 16)
+        assert checksum == raw[checksum_pos], 'original boot/application segment checksum mismatch'
+    return hex(crc)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', default='dist')
@@ -25,6 +56,7 @@ def main():
     version = re.search(r'FW_VERSION.*?(\d+\.\d+\.\d+[A-Za-z0-9.-]*)', (ROOT / 'platformio.ini').read_text()).group(1)
     fs_start, fs_size = 0x300000, 0xFA000
     assert 0 < len(firmware) <= 1044464 and firmware[0] == 0xE9, 'firmware size/header invalid'
+    image_crc = verify_arduino_image(firmware)
     assert len(filesystem) == fs_size, 'LittleFS size does not match 4m1m layout'
     shutil.copy2(build / 'firmware.bin', out / 'firmware.bin')
     shutil.copy2(build / 'littlefs.bin', out / 'littlefs.bin')
@@ -44,7 +76,7 @@ def main():
         'images':{}, 'flash_order':['firmware.bin','littlefs.bin'],
         'filesystem_update_erases_config':True,
         'gallery_reference_commit':'db934a9d60397db8c0a3bbefb1f007bb3a6616e0',
-        'verification':{'upstream_comparison_seeds':64,'hardware_connected':False}
+        'verification':{'upstream_comparison_seeds':64,'hardware_connected':False,'arduino_eboot_crc':image_crc,'boot_and_application_segment_checksums':'valid'}
     }
     for name,offset,kind in [('firmware.bin',0,'OTA firmware / UART'),('littlefs.bin',fs_start,'OTA filesystem / UART'),('flash-all.bin',0,'UART only')]:
         p = out / name
