@@ -1,205 +1,71 @@
-# Flashing glimmer onto a GeekMagic SmallTV-Ultra
+# 中文刷写说明
 
-This flashes the firmware over Wi-Fi — no case opening, no soldering, no
-USB-TTL adapter. The trick is to do the first flash over your **home LAN**,
-not over the stock device's AP, because TCP backpressure on the
-ESP8266's tiny buffers wedges curl mid-upload over the slow AP.
+目标设备：GeekMagic SmallTV-Ultra，ESP8266，4 MB 闪存，240×240 ST7789。其他型号不能据此保证兼容。设备自带 USB-C 接口只有供电，没有串口数据功能。
 
-## TL;DR
+## 文件选择
 
-1. Get the stock firmware onto your home Wi-Fi (one-time).
-2. Find the device's home-LAN IP.
-3. Download the prebuilt images (no toolchain needed):
-   `curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin`
-   `curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin`
-4. `curl -F "firmware=@firmware.bin"   http://<device-ip>/update` (firmware **first**)
-5. `curl -F "filesystem=@littlefs.bin" http://<device-ip>/update` (filesystem **second**)
-6. Device boots into glimmer's setup AP. Connect to it once to enter
-   your real Wi-Fi credentials.
+| 文件 | 用途 | 地址或上传字段 |
+|---|---|---|
+| firmware.bin | 固件 | 网页选择“固件文件”，或表单字段 `firmware`；串口地址 `0x0` |
+| littlefs.bin | 字体和中文网页 | 网页选择“文件系统文件”，或字段 `filesystem`；串口地址 `0x300000` |
+| flash-all.bin | 串口合并镜像 | 仅串口，地址 `0x0`；不要通过网页上传 |
 
-That's it. (Prefer to build from source? See Step 3, Option B.)
+文件系统镜像长度为 `0xFA000` 字节，对应 `0x300000` 到 `0x3FA000`，不覆盖末尾校准区域。包内 `SHA256SUMS` 可用于核对下载文件。
 
----
+## 无线刷写：先固件，后文件系统
 
-## Hardware reference
+如果是原厂固件，先通过原厂配网页把设备连接到家里的 2.4 GHz 无线网络，再查出设备 IP。原厂热点常见名称为 `GIFTV`，配网页地址为 `192.168.4.1`。
 
-| Item | Value |
-|---|---|
-| MCU | ESP8266 |
-| Flash | 4 MB |
-| Stock layout | `eagle.flash.4m3m.ld` (1 MB sketch, 3 MB LittleFS) |
-| glimmer layout | `eagle.flash.4m1m.ld` (3 MB sketch, 1 MB LittleFS) |
-| Display | 240×240 ST7789V IPS TFT |
-| Display **color inversion** | **REQUIRED:** `tft.invertDisplay(true)` |
-| Display pins | MOSI=GPIO13, SCLK=GPIO14, DC=GPIO0, RST=GPIO2, CS=floating/-1 |
-| **Backlight** | GPIO5, **ACTIVE-LOW PWM**: `analogWrite(5, 0)` = full bright; `1023` = off |
-| USB-C port | **Power only** — no data lines wired to MCU |
-| OTA endpoint | `POST /update`, form field `firmware` / `filesystem`, no auth |
+1. 已安装 glimmer 的设备，先打开中文面板“备份与刷写”导出设置。也可执行下方备份命令。
+2. 在设备的升级入口上传 `firmware.bin`。**必须先刷固件**；原厂固件依赖自己的文件系统，先替换文件系统可能导致启动失败。
+3. 等设备完成重启。首次安装可能进入 `glimmer-setup` 热点；连接该热点后用 `192.168.4.1` 作为下一步地址。
+4. 上传 `littlefs.bin`。更新文件系统会清除保存的网络密码和额度凭据。
+5. 设备重启后，连接 `glimmer-setup`，打开 `http://192.168.4.1/`。
+6. 在“备份与刷写”恢复原 glimmer 设置备份，或者在“网络与额度”填写网络信息并“保存并重启”。
+7. 设备回到家庭网络后，打开其 IP 或 `http://glimmer.local/`。
 
----
-
-## Step 1 — Bring the SmallTV onto your home Wi-Fi (one-time, stock firmware)
-
-If the device is brand-new it will boot into stock-firmware AP mode.
-The stock AP is named **`GIFTV`** (open, no password).
-
-If your device has stale Wi-Fi credentials, factory-reset by power-cycling
-three times: plug in, watch the progress bar start, unplug immediately,
-repeat. On the third boot the stock firmware enters AP mode with cleared
-settings.
-
-1. Connect a phone or laptop to **`GIFTV`** (your captive portal may
-   complain about "no internet" — ignore).
-2. Open `http://192.168.4.1/` in a browser.
-3. Click **Scan**, pick your home Wi-Fi (2.4 GHz only on stock), enter
-   the password, save. Device reboots and joins your network.
-4. Confirm the device shows its home-LAN IP on screen.
-
-> Note: the stock firmware has an information leak —
-> `GET http://192.168.4.1/config.json` returns saved Wi-Fi creds in
-> plaintext. Be aware. (glimmer fixes this — its `/api/export` is
-> standard JSON without leaking passwords in `GET` to unauth clients;
-> wifi password is masked.)
-
----
-
-## Step 2 — Find the device's IP
-
-From macOS:
+命令行等价操作如下，在解压目录内执行。把地址替换为设备实际地址；每次上传后等待设备重启，再继续下一步。
 
 ```bash
-# Refresh ARP cache, then look for the SmallTV
-for i in $(seq 1 254); do ping -c 1 -W 100 -t 1 192.168.0.$i &>/dev/null & done; wait
-arp -an | grep -iE "78:21:84|24:6f:28|30:ae:a4|94:b9:7e|cc:50:e3"
+# 已安装 glimmer 时先备份；原厂固件不适用此备份接口。
+curl --fail http://192.168.1.88/api/export -o glimmer-config-backup.json
+
+# 第一步：固件。
+curl --fail -F 'firmware=@firmware.bin' http://192.168.1.88/update
+
+# 第二步：文件系统。若设备已进入配网热点，地址改为 192.168.4.1。
+curl --fail -F 'filesystem=@littlefs.bin' http://192.168.1.88/update
+
+# 文件系统更新后：连接 glimmer-setup，再恢复备份。
+curl --fail -H 'Content-Type: application/json' --data-binary @glimmer-config-backup.json http://192.168.4.1/api/import
 ```
 
-Or use the screen — stock firmware shows the IP in small text at the bottom.
+备份包含网络密码和额度凭据，应保存在自己的设备上。已有 glimmer 的日后更新，若字体和网页没有变化，可以只刷固件保留设置；**本次中文网页更新需要刷两个文件**。
 
-Linux:
+## 串口刷写或恢复
+
+需要 USB-TTL 适配器和设备 UART 接线；设备自带的 USB-C 电源接口不能用于此操作。串口信号使用 3.3 V 电平，TX 接设备 RX，RX 接设备 TX，GND 共地，上电时 GPIO0 接地进入下载模式。
+
+安装工具：
 
 ```bash
-arp -a | grep -iE "espressif|78:21:84|24:6f:28"
-# or
-nmap -sn 192.168.0.0/24
+python -m pip install esptool
 ```
 
----
-
-## Step 3 — Get the glimmer images
-
-### Option A — download the prebuilt binaries (recommended, no toolchain)
-
-CI builds every push to `main` and publishes the images to the rolling
-[`latest`](https://github.com/Avinava/glimmer/releases/tag/latest) release.
-Grab them into your working directory:
+如果安装的是新版 esptool，Windows 串口例如 `COM5`，Linux 例如 `/dev/ttyUSB0`，macOS 例如 `/dev/cu.usbserial-0001`。任选一种写法：
 
 ```bash
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin
+# 分别写两个镜像。
+python -m esptool --chip esp8266 --port COM5 --baud 460800 write-flash --flash-size 4MB 0x0 firmware.bin 0x300000 littlefs.bin
+
+# 或一次写入串口合并镜像。
+python -m esptool --chip esp8266 --port COM5 --baud 460800 write-flash --flash-size 4MB 0x0 flash-all.bin
 ```
 
-For a pinned version instead of the rolling latest, use a `v*` tag's assets:
-`https://github.com/Avinava/glimmer/releases/download/v0.20.2/firmware.bin`.
+旧版 esptool 的子命令为 `write_flash`，参数为 `--flash_size`。刷写结束后断开 GPIO0 与地的连接，重新上电。
 
-### Option B — build from source (for developers)
+## 首次配置
 
-```bash
-cd <repo>
-pio run -e nodemcuv2              # builds firmware.bin
-pio run -e nodemcuv2 -t buildfs   # builds littlefs.bin (fonts + web UI)
-```
+中文面板“屏幕设置”中选择四页。关闭“自动轮播”后，可固定显示“潜在空间画廊”。画廊只需设置“画面刷新间隔”，每次刷新重新生成整个随机宇宙。页面轮播间隔与画廊画面刷新间隔独立。
 
-Both artifacts land in `.pio/build/nodemcuv2/`. If PlatformIO isn't
-installed: `brew install platformio` (macOS) or `pip install platformio`.
-
----
-
-## Step 4 — Flash glimmer
-
-> [!CAUTION]
-> **Order matters: ALWAYS flash firmware.bin FIRST!**
-> NEVER flash `filesystem` before `firmware` on a device running stock GeekMagic firmware (or any other non-glimmer firmware).
-> Stock firmware looks for its own files in LittleFS (`/config.json`, `/Alibaba20.vlw`). Overwriting the filesystem first causes the stock firmware to panic and crash (Exception 28 Panic / infinite bootloop), losing Wi-Fi and bricking OTA functionality!
-> Flashing `firmware.bin` first allows glimmer to boot up safely, connect to Wi-Fi (or setup AP), and smoothly receive the `littlefs.bin` upload.
-
-The commands below assume **Option A** (binaries in your current directory).
-For **Option B**, point the paths at `.pio/build/nodemcuv2/` instead.
-
-```bash
-DEVICE_IP=<your device's home-LAN IP>
-
-# 1. Flash firmware FIRST:
-curl -F "firmware=@firmware.bin" http://$DEVICE_IP/update
-# Wait ~15s for the device to reboot into glimmer
-
-# 2. Flash filesystem SECOND:
-curl -F "filesystem=@littlefs.bin" http://$DEVICE_IP/update
-# Or if device dropped into AP mode: http://192.168.4.1/update
-```
-
-### Hardware Serial Flashing (TTL / Unbricking)
-
-If the device is bricked or you prefer flashing over hardware USB-TTL:
-- Connect USB-TTL: `TX -> RX`, `RX -> TX`, `GND -> GND`, `3V3/5V -> VCC`, hold `GPIO0 -> GND` during power-on to enter bootloader mode.
-- Use `esptool.py` to write both partitions at their respective flash offsets:
-```bash
-esptool.py --port <COM_PORT> --baud 460800 write_flash 0x0 firmware.bin 0x300000 littlefs.bin
-```
-
-After both flashes complete, the device boots into glimmer.
-
----
-
-## Step 5 — First-time setup (glimmer's AP)
-
-After the first flash the device boots into AP mode:
-
-- **AP SSID**: `glimmer-setup` (open, no password)
-- **Setup page**: `http://192.168.4.1/`
-
-Steps:
-
-1. Connect your phone/laptop to `glimmer-setup`.
-2. Open `http://192.168.4.1/` in a browser.
-3. Wi-Fi tab — enter your home Wi-Fi SSID + password. Click **Save & Restart**.
-4. Wait ~20 s. The device reboots and joins your home Wi-Fi.
-5. Find it again (`arp -an` or `http://glimmer.local/` via mDNS).
-6. Optional: enter Antigravity / Codex tokens, weather lat/lon, channel toggles
-   on the respective tabs.
-
----
-
-## Re-flashing (any subsequent update)
-
-Once glimmer is on the device (download the latest images first, or use
-your local `.pio/build/nodemcuv2/` build):
-
-```bash
-# Latest CI build (or skip if building locally):
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/firmware.bin
-curl -L -O https://github.com/Avinava/glimmer/releases/download/latest/littlefs.bin
-
-# Optional: back up your config first (uploadfs wipes /config.json)
-curl -s -o /tmp/glimmer-config-backup.json http://<device-ip>/api/export
-
-# Firmware-only flash (preserves config):
-curl -F "firmware=@firmware.bin" http://<device-ip>/update
-
-# Full flash (firmware + new fonts/web UI):
-curl -F "firmware=@firmware.bin"   http://<device-ip>/update
-curl -F "filesystem=@littlefs.bin" http://<device-ip>/update
-# (config wiped — restore via setup AP and POST the backup to /api/import)
-```
-
-You can also use the web UI's "Reboot" button (Device page) instead of
-power-cycling.
-
----
-
-## Acknowledgments to the original community work
-
-The "OTA-only first flash" technique was a community discovery. The
-widely-cited advice that you must use UART for the first flash is wrong
-— it's wrong because everyone tried OTA over the stock device's slow
-GIFTV AP, where TCP backpressure on the ESP8266's tiny buffers wedges
-curl mid-upload. Over your **home LAN**, the same OTA finishes cleanly.
+“网络与额度”里填写反重力或 Codex 的现有凭据。留空保存会清除对应凭据；显示 `***` 表示已有凭据保持不变。无额度凭据时，时间页仍可显示时间，反重力页提示尚未配置。

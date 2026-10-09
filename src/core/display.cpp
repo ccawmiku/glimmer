@@ -10,7 +10,6 @@ TFT_eSPI tft = TFT_eSPI();
 // either 0 or 255 — TFT_eSPI's smooth-font path then renders without softening.
 //
 // Mapping:
-//   HUGE       → VT323-64    big 7-seg-style digits  (clock, %, temp)
 //   HUGE_TEXT  → VT323-32    medium VT323 with full ASCII (headlines)
 //   TITLE      → Silkscreen-16  status-bar titles + section labels
 //   TITLE_SM   → Silkscreen-12  tighter heading
@@ -21,15 +20,6 @@ TFT_eSPI tft = TFT_eSPI();
 // Acceptable since channels change every 8 s.
 
 static const char* s_loadedFont = nullptr;
-
-static const char* nameFor(Display::FontTier t) {
-    switch (t) {
-        case Display::HUGE:  return "VT323-64";
-        case Display::TITLE: return "Silkscreen-16";
-        case Display::BODY:  return "DMMono-11";
-    }
-    return "DMMono-11";
-}
 
 void Display::useFont(const char* name) {
     if (s_loadedFont && strcmp(s_loadedFont, name) == 0) return;
@@ -82,26 +72,6 @@ void Display::drawLogo(int x, int y, uint16_t color) {
             }
         }
     }
-}
-
-void Display::setFont(FontTier t) { useFont(nameFor(t)); }
-
-void Display::drawText(const char* s, int x, int y, uint16_t color, FontTier t,
-                       uint8_t datum, uint16_t bg) {
-    useFont(nameFor(t));
-    tft.setTextDatum(datum);
-    tft.setTextColor(color, bg);
-    tft.drawString(s, x, y);
-}
-
-int Display::textWidth(const char* s, FontTier t) {
-    useFont(nameFor(t));
-    return tft.textWidth(s);
-}
-
-int Display::fontHeight(FontTier t) {
-    useFont(nameFor(t));
-    return tft.fontHeight();
 }
 
 static bool s_initialized = false;
@@ -408,10 +378,8 @@ void Display::loadingDots(int x, int y, int litIndex, uint16_t accent, int count
 uint16_t Theme::channelColor(const char* name) {
     if (!name) return MUTED;
     if (!strcmp(name, "Antigravity")) return BLUE;
-    if (!strcmp(name, "Codex"))       return LILAC;
-    if (!strcmp(name, "Weather"))     return SKY;
-    if (!strcmp(name, "Clock"))       return AMBER;
-    if (!strcmp(name, "Info"))        return MINT;
-    if (!strcmp(name, "Push"))        return BLUE;  // overridden per-card
+    if (!strcmp(name, "Home")) return AMBER;
+    if (!strcmp(name, "Info")) return MINT;
+    if (!strcmp(name, "Gallery")) return LILAC;
     return MUTED;
 }

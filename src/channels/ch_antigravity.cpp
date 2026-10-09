@@ -19,7 +19,7 @@ static int   s_sparkHour = -1;
 static int   s_loadDot = -1;
 
 bool chAntigravityEnabled(const ChannelCtx& ctx) {
-    return ctx.settings && ctx.settings->showAntigravity && !ctx.settings->agToken.isEmpty();
+    return ctx.settings && ctx.settings->showAntigravity;
 }
 
 // Human label for a rate-limit window from its length in seconds.
@@ -127,6 +127,7 @@ static void paintSparkBar(const AntigravityData& d, int curHour) {
 }
 
 void chAntigravityDraw(const ChannelCtx& ctx) {
+    if (ctx.settings->agToken.isEmpty()) { Display::drawError("No token", "Configure web UI"); return; }
     Display::clear();
     const char* agModel = ctx.settings->agModelLabel.length() > 0
                         ? ctx.settings->agModelLabel.c_str() : "GEMINI";
@@ -191,7 +192,7 @@ void chAntigravityDraw(const ChannelCtx& ctx) {
 }
 
 void chAntigravityTick(const ChannelCtx& ctx) {
-    if (!ctx.antigravity) return;
+    if (!ctx.antigravity || ctx.settings->agToken.isEmpty()) return;
     const AntigravityData& d = *ctx.antigravity;
     if (d.err[0]) return;
     if (!d.valid) {                       // loading — sweep the chase dots

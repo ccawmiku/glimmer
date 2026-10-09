@@ -3,11 +3,6 @@
 #include <time.h>
 #include "storage.h"
 
-struct ModelSlot {
-    float pct = -1.0f;
-    char  label[12] = "";
-};
-
 struct AntigravityData {
     float  primaryPct     = -1.0f;
     float  secondaryPct   = -1.0f;
@@ -32,11 +27,8 @@ struct CodexData {
     long   secondaryWinSec = 0;      // secondary window length (s) → drives label
     char   secondaryTag[16] = "";    // non-empty when the secondary row comes from
                                      // an additional model limit (e.g. "SPARK")
-    float  creditsRemain  = -1.0f;
     bool   valid = false;
     char   err[24] = "";
-    uint8_t hourlyPct[24] = {};
-    bool    hourlyValid[24] = {};
 };
 
 // "Loading" = configured but never successfully fetched, with no error yet.
@@ -45,11 +37,13 @@ inline bool codexLoading      (const CodexData&       d) { return !d.valid && !d
 
 namespace Api {
     inline float antigravityHeroPct(const Settings& s, const AntigravityData& d) {
+        if (!d.valid) return -1.f;
         bool realSecondary = d.secondaryPct >= 0 && d.secondaryTag[0] == '\0';
         return (realSecondary && s.agWeeklyHero) ? d.secondaryPct : d.primaryPct;
     }
 
     inline float codexHeroPct(const Settings& s, const CodexData& d) {
+        if (!d.valid) return -1.f;
         bool realSecondary = d.secondaryPct >= 0 && d.secondaryTag[0] == '\0';
         return (realSecondary && s.codexWeeklyHero) ? d.secondaryPct : d.primaryPct;
     }

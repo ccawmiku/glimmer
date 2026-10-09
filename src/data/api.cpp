@@ -395,23 +395,7 @@ bool Api::fetchCodex(const Settings& s, CodexData& out) {
         }
     }
 
-    bool hasCredits = doc["credits"]["has_credits"] | false;
-    if (hasCredits) {
-        const char* bal = doc["credits"]["balance"] | "0";
-        out.creditsRemain = atof(bal);
-    } else {
-        out.creditsRemain = -1.0f;
-    }
-
     out.valid = true;
-
-    time_t t = time(nullptr);
-    if (t > 1000000000L) {
-        struct tm tm; localtime_r(&t, &tm);
-        int h = tm.tm_hour;
-        out.hourlyPct[h]   = (uint8_t)(out.primaryPct < 0 ? 0 : out.primaryPct);
-        out.hourlyValid[h] = true;
-    }
 
     return true;
 }

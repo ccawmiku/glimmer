@@ -1,0 +1,13 @@
+{
+  "name": "glimmer-cn-gallery-tests",
+  "private": true,
+  "version": "0.21.0",
+  "description": "小电视中文面板的开发验证工具，不随设备固件安装",
+  "scripts": {
+    "test": "python3 tests/verify_gallery.py",
+    "test:web": "node tests/check_ui.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0"
+  }
+}

@@ -19,6 +19,8 @@ static int    s_rssi    = 1;          // RSSI is negative; 1 = sentinel "unset"
 static int    s_upMin   = -1;
 static int    s_heapKB  = -1;
 static int    s_refreshAgo = -1;
+static bool s_connected = false;
+static String s_ip;
 
 bool chInfoEnabled(const ChannelCtx& ctx) {
     return ctx.settings && ctx.settings->showInfo;
@@ -51,7 +53,7 @@ void chInfoDraw(const ChannelCtx& ctx) {
     infoRow(y, "Signal",   String(rssi) + " dBm",                  sigCol);              y += step;
     infoRow(y, "Uptime",   String(ctx.now_ms / 60000UL) + "m",     Theme::INK_DIM);      y += step;
     infoRow(y, "Memory",   String(ESP.getFreeHeap()/1024) + "K free", Theme::AMBER);     y += step;
-    infoRow(y, "CPU",      String(ESP.getCpuFreqMHz()) + "MHz",    Theme::INK_DIM);      y += step;
+    infoRow(y, "WiFi",     WiFi.status() == WL_CONNECTED ? "Connected" : "Offline", Theme::INK_DIM);      y += step;
     infoRow(y, "Firmware", "v" FW_VERSION,                          Theme::INK_DIM);      y += step;
 
     int en = mainEnabledCount(), tot = mainTotalCount();
@@ -64,6 +66,8 @@ void chInfoDraw(const ChannelCtx& ctx) {
     infoRow(y, "Next",     "in " + String(inMin) + "m",            Theme::MINT, false);
 
     // Seed cache
+    s_connected = WiFi.status() == WL_CONNECTED;
+    s_ip = WiFi.localIP().toString();
     s_rssi      = rssi;
     s_upMin     = ctx.now_ms / 60000UL;
     s_heapKB    = ESP.getFreeHeap() / 1024;
@@ -72,6 +76,13 @@ void chInfoDraw(const ChannelCtx& ctx) {
 
 void chInfoTick(const ChannelCtx& ctx) {
     const int step = 20;
+    bool connected = WiFi.status() == WL_CONNECTED;
+    String ip = WiFi.localIP().toString();
+    if (connected != s_connected) {
+        infoRow(36 + 5 * step, "WiFi", connected ? "Connected" : "Offline", connected ? Theme::MINT : Theme::CORAL);
+        s_connected = connected;
+    }
+    if (ip != s_ip) { infoRow(36, "IP", ip, Theme::INK); s_ip = ip; }
     int rssi = WiFi.RSSI();
     int upMin = ctx.now_ms / 60000UL;
     int heapKB = ESP.getFreeHeap() / 1024;

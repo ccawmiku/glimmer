@@ -43,23 +43,12 @@ EXTRA = [0x00B0, 0x00B7]            # ° middle dot · — used by Codex / weath
 
 # (vlw_name, ttf_filename, em_px, codepoints)
 FONT_MATRIX = [
-    # VT323 — bignum hero family
-    ("VT323-32",        "VT323-Regular.ttf",      32, ASCII + EXTRA),
-    ("VT323-44",        "VT323-Regular.ttf",      44, ASCII + EXTRA),
-    ("VT323-64",        "VT323-Regular.ttf",      64, ASCII + EXTRA),
-    ("VT323-86",        "VT323-Regular.ttf",      86, ASCII + EXTRA),
-    ("VT323-110",       "VT323-Regular.ttf",     110, ASCII + EXTRA),
-    # Silkscreen — UI pixel font for status bars / pills / countdowns
-    ("Silkscreen-10",   "Silkscreen-Regular.ttf", 10, ASCII),
-    ("Silkscreen-12",   "Silkscreen-Regular.ttf", 12, ASCII),
-    ("Silkscreen-16",   "Silkscreen-Regular.ttf", 16, ASCII),
-    # Pixelify Sans — softer pixel display font
-    ("PixelifySans-14", "PixelifySans.ttf",       14, ASCII + EXTRA),
-    ("PixelifySans-22", "PixelifySans.ttf",       22, ASCII + EXTRA),
-    # DM Mono — small body text / tabular numbers
-    ("DMMono-9",        "DMMono-Regular.ttf",      9, ASCII + EXTRA),
-    ("DMMono-10",       "DMMono-Regular.ttf",     10, ASCII + EXTRA),
-    ("DMMono-11",       "DMMono-Regular.ttf",     11, ASCII + EXTRA),
+    ("VT323-32", "VT323-Regular.ttf", 32, ASCII + EXTRA),
+    ("VT323-44", "VT323-Regular.ttf", 44, ASCII + EXTRA),
+    ("VT323-86", "VT323-Regular.ttf", 86, ASCII + EXTRA),
+    ("Silkscreen-12", "Silkscreen-Regular.ttf", 12, ASCII),
+    ("Silkscreen-16", "Silkscreen-Regular.ttf", 16, ASCII),
+    ("DMMono-11", "DMMono-Regular.ttf", 11, ASCII + EXTRA),
 ]
 
 
