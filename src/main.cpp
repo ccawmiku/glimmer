@@ -38,7 +38,6 @@ static constexpr int kChannelCount = sizeof(kChannels) / sizeof(kChannels[0]);
 static Settings        g_settings;
 static bool            g_apMode      = false;
 static AntigravityData g_antigravity;
-static CodexData       g_codex;
 
 static int         g_activeIdx[kChannelCount];        // indices into kChannels[] that are currently enabled
 static int         g_activeCount = 0;
@@ -61,7 +60,6 @@ uint32_t mainLastRefreshMs() { return g_lastRefresh; }
 uint32_t mainRefreshIntervalMs() { return (uint32_t)g_settings.refreshMin * 60000UL; }
 void mainTriggerRefresh() { g_refreshRequested = true; }
 void mainSettingsChanged() { g_settingsDirty = true; }
-const CodexData* mainCodexData() { return &g_codex; }
 const char* mainEnabledChannelName(int idx) {
     if (idx < 0 || idx >= g_activeCount) return nullptr;
     return kChannels[g_activeIdx[idx]].name;
@@ -71,7 +69,7 @@ const AntigravityData* mainAntigravityData() { return &g_antigravity; }
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 static ChannelCtx makeCtx() {
-    return ChannelCtx { &g_settings, &g_antigravity, &g_codex, millis() };
+    return ChannelCtx { &g_settings, &g_antigravity, millis() };
 }
 
 static void recomputeActive() {
@@ -169,20 +167,9 @@ static void startAPMode() {
 
 // ── Refresh cycle ────────────────────────────────────────────────────────────
 
-// Tiny gap between TLS calls so BearSSL fully tears down + heap settles.
-// Without this, back-to-back fetches sometimes fail handshake (Auth -1).
-static void apiYieldGap() { yield(); delay(150); }
-
 static void refreshAll() {
     if (WiFi.status() != WL_CONNECTED) return;
-    if (!g_settings.agToken.isEmpty()) {
-        Api::fetchAntigravity(g_settings, g_antigravity);
-        apiYieldGap();
-    } else g_antigravity = AntigravityData{};
-    if (!g_settings.codexToken.isEmpty()) {
-        Api::fetchCodex(g_settings, g_codex);
-        apiYieldGap();
-    } else g_codex = CodexData{};
+    Api::fetchAntigravity(g_settings, g_antigravity);
     recomputeActive();
     drawActive();
 }
@@ -208,7 +195,7 @@ void setup() {
     } else {
         MDNS.begin(MDNS_HOSTNAME);
         Display::drawSplash("Syncing time");
-        configTime(0, 0, "pool.ntp.org", "time.google.com");
+        configTime(0, 0, "ntp.aliyun.com", "ntp.tencent.com", "pool.ntp.org");
         // POSIX TZ expresses signed minutes east of UTC as the
         // "minutes to ADD to local time to get UTC" → invert the sign.
         int signedMin = g_settings.tzMinutes;
@@ -287,6 +274,13 @@ void loop() {
         tft.fillCircle(SCREEN_W - 6, 6, 3, Theme::CORAL);
         refreshAll();
         g_lastSlide = now;
+    }
+
+    // Periodic NTP retry if time is still unsynced
+    static uint32_t lastNtpRetry = 0;
+    if (!g_apMode && time(nullptr) < 1000000000L && now - lastNtpRetry >= 10000) {
+        lastNtpRetry = now;
+        configTime(0, 0, "ntp.aliyun.com", "ntp.tencent.com", "pool.ntp.org");
     }
 
     // Apply saved page choices immediately, including when rotation is disabled.

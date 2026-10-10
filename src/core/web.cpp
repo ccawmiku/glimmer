@@ -15,7 +15,6 @@ extern int mainEnabledCount();
 extern void mainTriggerRefresh();
 extern void mainSettingsChanged();
 extern const AntigravityData* mainAntigravityData();
-extern const CodexData* mainCodexData();
 extern const Gallery::Frame* galleryFrame();
 extern uint32_t gallerySeed();
 extern uint32_t galleryCount();
@@ -34,10 +33,9 @@ static void error(int code, const char* message) {
 static void settingsDoc(JsonDocument& d, const Settings& s, bool masked) {
     d["wifiSSID"] = s.wifiSSID;
     d["wifiPass"] = masked && !s.wifiPass.isEmpty() ? String("***") : s.wifiPass;
+    d["agServer"] = s.agServer;
     d["agToken"] = masked && !s.agToken.isEmpty() ? String("***") : s.agToken;
     d["agModelLabel"] = s.agModelLabel;
-    d["codexToken"] = masked && !s.codexToken.isEmpty() ? String("***") : s.codexToken;
-    d["codexDeviceId"] = s.codexDeviceId;
     d["refreshMin"] = s.refreshMin;
     d["channelSec"] = s.channelSec;
     d["galleryRefreshSec"] = s.galleryRefreshSec;
@@ -50,7 +48,6 @@ static void settingsDoc(JsonDocument& d, const Settings& s, bool masked) {
     d["showGallery"] = s.showGallery;
     d["autoRotate"] = s.autoRotate;
     d["agWeeklyHero"] = s.agWeeklyHero;
-    d["codexWeeklyHero"] = s.codexWeeklyHero;
     d["invertDisplay"] = s.invertDisplay;
 }
 static void handleState() {
@@ -66,15 +63,32 @@ static void handleState() {
     d["heap"] = ESP.getFreeHeap();
     d["maxblk"] = ESP.getMaxFreeBlockSize();
     d["cpu_mhz"] = ESP.getCpuFreqMHz();
+    time_t now = time(nullptr);
+    d["time_synced"] = (now > 1000000000L);
+    d["epoch"] = (uint32_t)now;
+    if (now > 1000000000L) {
+        char timeStr[32];
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tmv);
+        d["time_str"] = timeStr;
+    }
     d["channel"] = mainActiveChannelName();
     d["enabled_count"] = mainEnabledCount();
-    d["ag_configured"] = !pSettings->agToken.isEmpty();
-    d["codex_configured"] = !pSettings->codexToken.isEmpty();
+    d["ag_configured"] = true;
     d["ag_http"] = Api::lastAgHttp();
     d["ag_valid"] = mainAntigravityData()->valid;
     d["ag_error"] = mainAntigravityData()->err;
-    d["codex_valid"] = mainCodexData()->valid;
-    d["codex_error"] = mainCodexData()->err;
+    d["ag_parse"] = Api::lastAgParse();
+    d["ag_count"] = mainAntigravityData()->accountCount;
+    JsonArray accArr = d["ag_accounts"].to<JsonArray>();
+    for (int i = 0; i < mainAntigravityData()->accountCount; i++) {
+        JsonObject a = accArr.add<JsonObject>();
+        a["email"] = mainAntigravityData()->accounts[i].email;
+        a["tag"] = mainAntigravityData()->accounts[i].tag;
+        a["p5h"] = mainAntigravityData()->accounts[i].primaryPct;
+        a["p7d"] = mainAntigravityData()->accounts[i].secondaryPct;
+    }
     d["gallery_seed"] = gallerySeed();
     d["gallery_count"] = galleryCount();
     d["gallery_decode_us"] = galleryDecodeUs();
@@ -107,10 +121,9 @@ static void applyIfPresent(Settings& s, JsonDocument& d) {
     auto applyBool = [&](const char* k, bool& dst) { if (d[k].is<bool>()) dst = d[k].as<bool>(); };
     applyStr("wifiSSID", s.wifiSSID);
     applyStr("wifiPass", s.wifiPass);
+    applyStr("agServer", s.agServer);
     applyStr("agToken", s.agToken);
     applyStr("agModelLabel", s.agModelLabel);
-    applyStr("codexToken", s.codexToken);
-    applyStr("codexDeviceId", s.codexDeviceId);
     if (d["refreshMin"].is<int>()) s.refreshMin = constrain(d["refreshMin"].as<int>(), 1, 60);
     if (d["channelSec"].is<int>()) s.channelSec = constrain(d["channelSec"].as<int>(), 3, 3600);
     if (d["galleryRefreshSec"].is<int>()) s.galleryRefreshSec = constrain(d["galleryRefreshSec"].as<int>(), 1, 86400);
@@ -123,7 +136,6 @@ static void applyIfPresent(Settings& s, JsonDocument& d) {
     applyBool("showGallery", s.showGallery);
     applyBool("autoRotate", s.autoRotate);
     applyBool("agWeeklyHero", s.agWeeklyHero);
-    applyBool("codexWeeklyHero", s.codexWeeklyHero);
     applyBool("invertDisplay", s.invertDisplay);
     Storage::normalize(s);
 }
@@ -133,7 +145,7 @@ static void handlePostSettings() {
     Settings updated = *pSettings;
     applyIfPresent(updated, d);
     if (!Storage::save(updated)) { error(500, "保存失败，存储空间不可写"); return; }
-    bool tokensChanged = updated.agToken != pSettings->agToken || updated.codexToken != pSettings->codexToken;
+    bool tokensChanged = updated.agToken != pSettings->agToken || updated.agServer != pSettings->agServer;
     *pSettings = updated;
     Display::setInvert(updated.invertDisplay);
     Display::setBrightness(updated.brightness);

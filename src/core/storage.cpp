@@ -23,10 +23,9 @@ Settings Storage::load() {
     if (err || !doc.is<JsonObject>()) return s;
     s.wifiSSID = doc["wifi_ssid"] | "";
     s.wifiPass = doc["wifi_pass"] | "";
+    s.agServer = doc["ag_server"] | "http://192.168.1.1:8045";
     s.agToken = doc["ag_token"] | "";
-    s.agModelLabel = doc["ag_model"] | "Gemini";
-    s.codexToken = doc["codex_token"] | "";
-    s.codexDeviceId = doc["codex_dev"] | "";
+    s.agModelLabel = doc["ag_model"] | "GEMINI";
     s.refreshMin = doc["refresh_min"] | 5;
     s.channelSec = doc["channel_sec"] | 8;
     s.galleryRefreshSec = doc["gallery_refresh_sec"] | 10;
@@ -38,7 +37,6 @@ Settings Storage::load() {
     s.showGallery = doc["show_gallery"] | true;
     s.autoRotate = doc["auto_rotate"] | true;
     s.agWeeklyHero = doc["ag_weekly_hero"] | false;
-    s.codexWeeklyHero = doc["codex_weekly_hero"] | false;
     s.invertDisplay = doc["invert_display"] | true;
     // Preserve UTC (0) as a valid offset; migrate older hour-only backups.
     s.tzMinutes = doc["tz_minutes"].is<int>() ? doc["tz_minutes"].as<int>()
@@ -52,10 +50,9 @@ bool Storage::save(const Settings& s) {
     JsonDocument doc;
     doc["wifi_ssid"] = s.wifiSSID;
     doc["wifi_pass"] = s.wifiPass;
+    doc["ag_server"] = s.agServer;
     doc["ag_token"] = s.agToken;
     doc["ag_model"] = s.agModelLabel;
-    doc["codex_token"] = s.codexToken;
-    doc["codex_dev"] = s.codexDeviceId;
     doc["refresh_min"] = s.refreshMin;
     doc["channel_sec"] = s.channelSec;
     doc["gallery_refresh_sec"] = s.galleryRefreshSec;
@@ -67,7 +64,6 @@ bool Storage::save(const Settings& s) {
     doc["show_gallery"] = s.showGallery;
     doc["auto_rotate"] = s.autoRotate;
     doc["ag_weekly_hero"] = s.agWeeklyHero;
-    doc["codex_weekly_hero"] = s.codexWeeklyHero;
     doc["invert_display"] = s.invertDisplay;
     doc["tz_minutes"] = s.tzMinutes;
     File f = LittleFS.open("/config.tmp", "w");

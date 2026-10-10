@@ -5,8 +5,9 @@
 // Only settings used by the four retained pages and device setup.
 struct Settings {
     String wifiSSID, wifiPass;
-    String agToken, agModelLabel;
-    String codexToken, codexDeviceId;
+    String agServer = "http://192.168.1.1:8045";
+    String agToken;
+    String agModelLabel;
     uint32_t refreshMin = 5;
     uint32_t channelSec = 8;
     uint32_t galleryRefreshSec = 10;
@@ -19,7 +20,6 @@ struct Settings {
     bool showGallery = true;
     bool autoRotate = true;
     bool agWeeklyHero = false;
-    bool codexWeeklyHero = false;
     bool invertDisplay = true;
 };
 

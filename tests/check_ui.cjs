@@ -18,7 +18,7 @@ await new Promise(resolve=>server.listen(18472,'127.0.0.1',resolve));
 const browser = await chromium.launch({headless:true});
 const page = await browser.newPage({viewport:{width:1150,height:1000}});
 const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-let settings={wifiSSID:'测试网络',wifiPass:'***',agToken:'***',agModelLabel:'测试模型',codexToken:'***',codexDeviceId:'',refreshMin:5,channelSec:8,galleryRefreshSec:10,brightness:80,tzMinutes:480,selectedPage:0,showHome:true,showAntigravity:true,showInfo:true,showGallery:true,autoRotate:true,agWeeklyHero:false,codexWeeklyHero:false,invertDisplay:true};
+let settings={wifiSSID:'测试网络',wifiPass:'***',agServer:'http://192.168.1.1:8045',agToken:'***',agModelLabel:'测试模型',refreshMin:5,channelSec:8,galleryRefreshSec:10,brightness:80,tzMinutes:480,selectedPage:0,showHome:true,showAntigravity:true,showInfo:true,showGallery:true,autoRotate:true,agWeeklyHero:false,invertDisplay:true};
 const cp = require('child_process'), os = require('os');
 const runner = path.join(os.tmpdir(),'glimmer-gallery-test');
 cp.execFileSync('g++',['-std=c++17','-O2','-Isrc/gallery','src/gallery/gallery.cpp','tests/gallery_runner.cpp','-o',runner],{cwd:repo});

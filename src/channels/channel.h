@@ -7,7 +7,6 @@
 struct ChannelCtx {
     const Settings*        settings;
     const AntigravityData* antigravity;
-    const CodexData*       codex;
     uint32_t               now_ms;     // millis() at draw time
 };
 

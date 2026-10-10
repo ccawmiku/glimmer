@@ -15,8 +15,6 @@ static time_t parseISO8601(const char* s) {
                &t.tm_hour, &t.tm_min, &t.tm_sec) < 6) return 0;
     t.tm_year -= 1900;
     t.tm_mon  -= 1;
-    // The API returns UTC timestamps. mktime uses local TZ, so temporarily
-    // force UTC, parse, then restore.
     char* prev = getenv("TZ");
     String backup = prev ? prev : "";
     setenv("TZ", "UTC0", 1); tzset();
@@ -28,7 +26,7 @@ static time_t parseISO8601(const char* s) {
 
 String Api::formatCountdown(time_t t) {
     time_t now = time(nullptr);
-    if (now < 1000000000L) return "--";                 // clock not synced yet
+    if (now < 1000000000L) return "--";
     long diff = (long)(t - now);
     if (diff <= 0) return "now";
     long h = diff / 3600;
@@ -38,83 +36,55 @@ String Api::formatCountdown(time_t t) {
     char b[8]; snprintf(b, sizeof(b), "%ldm", m); return b;
 }
 
-// ── shared TLS request ────────────────────────────────────────────────────────
-//
-// ESP8266 BearSSL is memory-hungry. We use a fresh client per request and free
-// it before deserialization to give ArduinoJson room.
+// ── shared HTTP / TLS request ────────────────────────────────────────────────
 
-static bool tlsRequestOnce(const char* method, const String& url,
-                           const std::function<void(HTTPClient&)>& addHeaders,
-                           const String& postData,
-                           String& body, int& httpCode) {
-    BearSSL::WiFiClientSecure sc;
-    sc.setInsecure();
-    sc.setBufferSizes(4096, 1024);                      // 4K rx (cert chain), 1K tx
-    HTTPClient http;
-    http.useHTTP10(true);                               // simpler/predictable, no chunked
-    http.setTimeout(15000);
-    if (!http.begin(sc, url)) {
-        httpCode = -2;                                  // -2 = begin() failed (URL/TLS init)
-        Serial.printf("[tls] http.begin failed, heap=%u, maxblk=%u\n",
-                      ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
-        return false;
-    }
-    addHeaders(http);
-    if (strcmp(method, "POST") == 0) {
-        httpCode = http.POST(postData);
-    } else {
-        httpCode = http.GET();
-    }
-    Serial.printf("[tls] %s %s → %d, heap=%u, maxblk=%u\n",
-                  method, url.c_str(), httpCode, ESP.getFreeHeap(), ESP.getMaxFreeBlockSize());
-    if (httpCode == HTTP_CODE_OK) body = http.getString();
-    http.end();
-    return httpCode == HTTP_CODE_OK;
-}
-
-static bool tlsRequest(const char* method, const String& url,
-                       const std::function<void(HTTPClient&)>& addHeaders,
-                       const String& postData,
-                       String& body, int& httpCode) {
+static bool httpRequest(const String& url,
+                        const std::function<void(HTTPClient&)>& addHeaders,
+                        String& body, int& httpCode) {
     Display::releaseFont();
     yield(); delay(20);
 
-    Serial.printf("[tls] heap=%u maxblk=%u url=%s\n",
-                  ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), url.c_str());
+    bool isHttps = url.startsWith("https://");
+    HTTPClient http;
+    http.useHTTP10(true);
+    http.setTimeout(10000);
 
-    if (tlsRequestOnce(method, url, addHeaders, postData, body, httpCode)) return true;
-
-    if (httpCode < 0) {
-        Serial.printf("[tls] retry after %d ...\n", httpCode);
-        yield(); delay(200);                            // let BearSSL/heap settle
-        if (tlsRequestOnce(method, url, addHeaders, postData, body, httpCode)) {
-            Serial.printf("[tls] retry succeeded\n");
-            return true;
+    if (isHttps) {
+        BearSSL::WiFiClientSecure sc;
+        sc.setInsecure();
+        sc.setBufferSizes(4096, 1024);
+        if (!http.begin(sc, url)) {
+            httpCode = -2;
+            return false;
         }
-        Serial.printf("[tls] retry also failed (%d)\n", httpCode);
+        addHeaders(http);
+        httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) body = http.getString();
+        http.end();
+        return httpCode == HTTP_CODE_OK;
+    } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+            httpCode = -2;
+            return false;
+        }
+        addHeaders(http);
+        httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) body = http.getString();
+        http.end();
+        return httpCode == HTTP_CODE_OK;
     }
-    return false;
-}
-
-static bool tlsGet(const String& url, const std::function<void(HTTPClient&)>& addHeaders,
-                   String& body, int& httpCode) {
-    return tlsRequest("GET", url, addHeaders, "", body, httpCode);
-}
-
-static bool tlsPost(const String& url, const std::function<void(HTTPClient&)>& addHeaders,
-                    const String& postData, String& body, int& httpCode) {
-    return tlsRequest("POST", url, addHeaders, postData, body, httpCode);
 }
 
 // ── Transient failure suppression ────────────────────────────────────────────
 static constexpr int kMaxSilentFails = 3;
-static int s_agFails    = 0;
-static int s_codexFails = 0;
+static int s_agFails = 0;
 
 // ── Debug telemetry (surfaced in /api/state) ──
-static int  s_dbgAgHttp    = 0;     // last Antigravity usage HTTP code
-static int  s_dbgAgBodyLen = -1;    // last Antigravity usage body length
-static char s_dbgAgParse[24] = "";  // last deserialization error text ("Ok" on success)
+static int  s_dbgAgHttp    = 0;
+static int  s_dbgAgBodyLen = -1;
+static char s_dbgAgParse[24] = "";
+
 namespace Api {
     int  lastAgHttp()    { return s_dbgAgHttp; }
     int  lastAgBodyLen() { return s_dbgAgBodyLen; }
@@ -124,7 +94,7 @@ namespace Api {
 static bool agSoftFail(AntigravityData& out, const char* err) {
     s_agFails++;
     if (s_agFails < kMaxSilentFails) {
-        if (!out.valid) out.err[0] = '\0';   // cold boot → neutral "--", not an error
+        if (!out.valid) out.err[0] = '\0';
         Serial.printf("[antigravity] soft fail (%s) %d/%d — %s\n", err, s_agFails,
                       kMaxSilentFails, out.valid ? "keeping stale" : "showing placeholder");
         return false;
@@ -134,179 +104,214 @@ static bool agSoftFail(AntigravityData& out, const char* err) {
     return false;
 }
 
-// ── Antigravity fetch ────────────────────────────────────────────────────────
+// ── Antigravity fetch from Antigravity Tools ─────────────────────────────────
 
-static String s_agAccessToken;
-static time_t s_agTokenExpires = 0;
-static String s_agCachedRefreshToken;
+bool Api::fetchAntigravity(const Settings& s, AntigravityData& out) {
+    String serverBase = s.agServer;
+    if (serverBase.isEmpty()) serverBase = "http://192.168.1.1:8045";
+    while (serverBase.endsWith("/")) serverBase.remove(serverBase.length() - 1);
+    
+    String url = serverBase;
+    if (!url.endsWith("/api/accounts")) url += "/api/accounts";
 
-// Split to avoid false-positive flagging by automated push scanners for public OAuth client IDs
-static inline String getAgClientId() {
-    return String("1071006060591-tmhssin2h21lcre235vtolojh4g403ep") + String(".apps.") + String("googleusercontent.com");
-}
-static inline String getAgClientSecret() {
-    return String("GOC") + String("SPX-K58FWR486LdLJ1mLB8sXC4z6qDAf");
-}
+    String token = s.agToken;
+    if (token.isEmpty()) token = "PS4bilibili"; // 默认管理密码
 
-static bool refreshAgAccessToken(const String& refreshToken, String& outAccessToken, char errBuf[]) {
-    String postBody = "client_id=" + getAgClientId() +
-                      "&client_secret=" + getAgClientSecret() +
-                      "&refresh_token=" + refreshToken +
-                      "&grant_type=refresh_token";
-
-    String body; int code;
+    String body; int code = 0;
     auto addH = [&](HTTPClient& h) {
-        h.addHeader("Content-Type", "application/x-www-form-urlencoded");
-        h.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Antigravity/1.0");
+        h.addHeader("Authorization", "Bearer " + token);
+        h.addHeader("x-api-key", token);
+        h.addHeader("Content-Type", "application/json");
+        h.setUserAgent("Glimmer/1.0");
     };
 
-    if (!tlsPost("https://oauth2.googleapis.com/token", addH, postBody, body, code)) {
-        snprintf(errBuf, 24, "Auth %d", code);
-        return false;
+    if (!httpRequest(url, addH, body, code)) {
+        s_dbgAgHttp = code;
+        s_dbgAgBodyLen = -1;
+        snprintf(s_dbgAgParse, sizeof(s_dbgAgParse), "HTTP %d", code);
+        char e[24]; snprintf(e, sizeof(e), "HTTP %d", code);
+        return agSoftFail(out, e);
     }
 
+    s_dbgAgHttp = code;
+    s_dbgAgBodyLen = (int)body.length();
+
+    // 过滤解析以节省内存：剔除庞大的 models 数组，保留 quota_groups 结构
     JsonDocument filter;
-    filter["access_token"] = true;
-    filter["expires_in"] = true;
+    filter["current_account_id"] = true;
+    filter["accounts"][0]["id"] = true;
+    filter["accounts"][0]["email"] = true;
+    filter["accounts"][0]["name"] = true;
+    filter["accounts"][0]["is_current"] = true;
+    filter["accounts"][0]["disabled"] = true;
+    filter["accounts"][0]["proxy_disabled"] = true;
+    filter["accounts"][0]["validation_blocked"] = true;
+    filter["accounts"][0]["quota"]["quota_groups"] = true;
+    filter["accounts"][0]["quota"]["last_updated"] = true;
 
     JsonDocument doc;
     DeserializationError jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+    strncpy(s_dbgAgParse, jerr.c_str(), sizeof(s_dbgAgParse) - 1);
+    s_dbgAgParse[sizeof(s_dbgAgParse) - 1] = '\0';
+
     if (jerr) {
-        snprintf(errBuf, 24, "JSON %s", jerr.c_str());
-        return false;
-    }
-
-    const char* at = doc["access_token"].as<const char*>();
-    if (!at || !*at) {
-        snprintf(errBuf, 24, "No token");
-        return false;
-    }
-
-    outAccessToken = at;
-    long exp = doc["expires_in"] | 3600;
-    time_t now = time(nullptr);
-    s_agTokenExpires = (now > 1000000000L) ? (now + exp - 120) : (now + 3480);
-    return true;
-}
-
-bool Api::fetchAntigravity(const Settings& s, AntigravityData& out) {
-    if (s.agToken.isEmpty()) { out.valid = false; return true; }
-
-    String accessToken;
-    if (s.agToken.startsWith("ya29.")) {
-        // Direct access token provided
-        accessToken = s.agToken;
-    } else {
-        // Refresh token provided (e.g. 1//...)
-        time_t now = time(nullptr);
-        if (s_agAccessToken.length() && s_agCachedRefreshToken == s.agToken && (now < 1000000000L || now < s_agTokenExpires)) {
-            accessToken = s_agAccessToken;
-        } else {
-            char authErr[24] = "";
-            if (!refreshAgAccessToken(s.agToken, accessToken, authErr)) {
-                return agSoftFail(out, authErr);
-            }
-            s_agAccessToken = accessToken;
-            s_agCachedRefreshToken = s.agToken;
-            yield(); delay(150);
-        }
-    }
-
-    String body; int code;
-    String url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
-    String postBody = "{\"project\":\"aicode-consumers\"}";
-    auto addH = [&](HTTPClient& h) {
-        h.addHeader("Authorization", "Bearer " + accessToken);
-        h.addHeader("Content-Type",  "application/json");
-        h.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Antigravity/1.0");
-    };
-
-    JsonDocument doc;
-    DeserializationError jerr;
-    bool parsed = false;
-
-    // Filter keeps only needed fields, saving ESP8266 heap:
-    JsonDocument filter;
-    filter["groups"][0]["displayName"] = true;
-    filter["groups"][0]["buckets"][0]["bucketId"] = true;
-    filter["groups"][0]["buckets"][0]["remainingFraction"] = true;
-    filter["groups"][0]["buckets"][0]["resetTime"] = true;
-
-    for (int attempt = 0; attempt < 2 && !parsed; attempt++) {
-        if (attempt) { yield(); delay(200); }
-        if (!tlsPost(url, addH, postBody, body, code)) {
-            s_dbgAgHttp = code; s_dbgAgBodyLen = -1;
-            snprintf(s_dbgAgParse, sizeof(s_dbgAgParse), "no-200");
-            char e[24]; snprintf(e, sizeof(e), "HTTP %d", code);
-            // If token expired, clear cache so next run refreshes
-            if (code == 401) { s_agAccessToken = ""; s_agTokenExpires = 0; }
-            return agSoftFail(out, e);
-        }
-        s_dbgAgHttp    = code;
-        s_dbgAgBodyLen = (int)body.length();
-        jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
-        strncpy(s_dbgAgParse, jerr.c_str(), sizeof(s_dbgAgParse) - 1);
-        s_dbgAgParse[sizeof(s_dbgAgParse) - 1] = '\0';
-        if (!jerr) { parsed = true; break; }
-        Serial.printf("[antigravity] quota parse err: %s (body=%u, heap=%u, maxblk=%u) attempt %d\n",
-                      jerr.c_str(), body.length(), ESP.getFreeHeap(),
-                      ESP.getMaxFreeBlockSize(), attempt + 1);
-        doc.clear();
-    }
-    body = String();
-    if (!parsed) {
         char e[24]; snprintf(e, sizeof(e), "JSON %s", jerr.c_str());
         return agSoftFail(out, e);
     }
-    out.err[0] = '\0';
-    s_agFails = 0;
 
-    // Select group (default to "Gemini Models", or 3P if requested)
-    bool want3P = s.agModelLabel.equalsIgnoreCase("3p") || s.agModelLabel.equalsIgnoreCase("claude");
-    JsonArray groups = doc["groups"].as<JsonArray>();
-    JsonObject chosenGroup;
-    for (JsonObject g : groups) {
-        const char* name = g["displayName"] | "";
-        if (want3P && (strstr(name, "3p") || strstr(name, "Claude"))) {
-            chosenGroup = g; break;
-        } else if (!want3P && (strstr(name, "Gemini") || strstr(name, "gemini"))) {
-            chosenGroup = g; break;
-        }
-    }
-    if (chosenGroup.isNull() && groups.size() > 0) {
-        chosenGroup = groups[0].as<JsonObject>();
-    }
+    body = String(); // 立即释放 body 内存
 
-    if (chosenGroup.isNull()) {
-        char e[24] = "No groups";
+    JsonArray accArray = doc["accounts"].as<JsonArray>();
+    if (accArray.isNull() || accArray.size() == 0) {
+        snprintf(s_dbgAgParse, sizeof(s_dbgAgParse), "No accounts");
+        char e[24] = "No accounts";
         return agSoftFail(out, e);
     }
 
-    auto rem = [](float fraction) {
-        float v = fraction * 100.0f;
-        if (v < 0.0f) v = 0.0f;
-        if (v > 100.0f) v = 100.0f;
-        return v;
-    };
+    const char* currentAccountId = doc["current_account_id"] | "";
 
-    for (JsonObject b : chosenGroup["buckets"].as<JsonArray>()) {
-        const char* bid = b["bucketId"] | "";
-        float fraction = b["remainingFraction"] | 0.0f;
-        const char* rt = b["resetTime"] | "";
-        time_t rst = rt ? parseISO8601(rt) : 0;
+    out.accountCount = 0;
+    int currentFoundIdx = -1;
 
-        if (strstr(bid, "5h")) {
-            out.primaryPct    = rem(fraction);
-            out.primaryReset  = rst;
-            out.primaryWinSec = 18000;
-        } else if (strstr(bid, "weekly")) {
-            out.secondaryPct    = rem(fraction);
-            out.secondaryReset  = rst;
-            out.secondaryWinSec = 604800;
+    for (JsonObject accObj : accArray) {
+        if (out.accountCount >= kMaxAgAccounts) break;
+
+        AntigravityAccount& acc = out.accounts[out.accountCount];
+        const char* email = accObj["email"] | "";
+        const char* name  = accObj["name"]  | "";
+        strncpy(acc.email, email, sizeof(acc.email) - 1);
+        acc.email[sizeof(acc.email) - 1] = '\0';
+        strncpy(acc.name, name, sizeof(acc.name) - 1);
+        acc.name[sizeof(acc.name) - 1] = '\0';
+
+        const char* accId = accObj["id"] | "";
+        bool isCurrent = accObj["is_current"] | false;
+        if (!isCurrent && currentAccountId[0] && strcmp(accId, currentAccountId) == 0) {
+            isCurrent = true;
+        }
+        acc.isCurrent = isCurrent;
+
+        acc.isDisabled = (accObj["disabled"] | false) ||
+                         (accObj["proxy_disabled"] | false) ||
+                         (accObj["validation_blocked"] | false);
+
+        JsonObject lim = accObj["live_limited_models"].as<JsonObject>();
+        acc.isLimited = !lim.isNull() && lim.size() > 0;
+
+        // 提取 5h 和 7d (weekly) 配额
+        // 默认优先匹配 Gemini 核心配额 (gemini-5h / gemini-weekly)，避免被始终为 100% 的 3p 额度覆盖
+        bool preferGemini = !s.agModelLabel.equalsIgnoreCase("CLAUDE");
+        bool exact5h = false;
+        bool exact7d = false;
+        float frac5h = -1.0f;
+        float frac7d = -1.0f;
+        time_t rst5h = 0;
+        time_t rst7d = 0;
+
+        JsonArray groups = accObj["quota"]["quota_groups"].as<JsonArray>();
+        for (JsonObject g : groups) {
+            for (JsonObject b : g["buckets"].as<JsonArray>()) {
+                const char* bid = b["bucket_id"] | "";
+                const char* win = b["window"] | "";
+                float frac = b["remaining_fraction"] | -1.0f;
+                const char* rt = b["reset_time"] | "";
+                time_t rst = rt ? parseISO8601(rt) : 0;
+
+                bool is5h = (strcmp(win, "5h") == 0) || (strstr(bid, "5h") != nullptr);
+                bool is7d = (strcmp(win, "weekly") == 0) || (strstr(bid, "weekly") != nullptr) || (strstr(bid, "7d") != nullptr);
+                bool isGemini = (strstr(bid, "gemini") != nullptr);
+                bool is3p = (strstr(bid, "3p") != nullptr) || (strstr(bid, "claude") != nullptr);
+
+                if (is5h) {
+                    if (preferGemini) {
+                        if (isGemini) {
+                            frac5h = frac; rst5h = rst; exact5h = true;
+                        } else if (!exact5h && frac5h < 0) {
+                            frac5h = frac; rst5h = rst;
+                        }
+                    } else {
+                        if (is3p) {
+                            frac5h = frac; rst5h = rst; exact5h = true;
+                        } else if (!exact5h && frac5h < 0) {
+                            frac5h = frac; rst5h = rst;
+                        }
+                    }
+                }
+
+                if (is7d) {
+                    if (preferGemini) {
+                        if (isGemini) {
+                            frac7d = frac; rst7d = rst; exact7d = true;
+                        } else if (!exact7d && frac7d < 0) {
+                            frac7d = frac; rst7d = rst;
+                        }
+                    } else {
+                        if (is3p) {
+                            frac7d = frac; rst7d = rst; exact7d = true;
+                        } else if (!exact7d && frac7d < 0) {
+                            frac7d = frac; rst7d = rst;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (frac5h < 0) frac5h = 1.0f;
+        if (frac7d < 0) frac7d = 1.0f;
+
+        acc.primaryPct     = frac5h * 100.0f;
+        acc.secondaryPct   = frac7d * 100.0f;
+        acc.primaryReset   = rst5h;
+        acc.secondaryReset = rst7d;
+
+        if (acc.isCurrent && currentFoundIdx < 0) {
+            currentFoundIdx = out.accountCount;
+        }
+
+        out.accountCount++;
+    }
+
+    // 设置短标签：单账号显示 "AG"，多账号分别显示 "A1", "A2", "A3"...
+    for (int i = 0; i < out.accountCount; i++) {
+        if (out.accountCount == 1) {
+            strncpy(out.accounts[i].tag, "AG", sizeof(out.accounts[i].tag) - 1);
+        } else {
+            snprintf(out.accounts[i].tag, sizeof(out.accounts[i].tag), "A%d", i + 1);
         }
     }
 
+    if (currentFoundIdx < 0 && out.accountCount > 0) {
+        currentFoundIdx = 0;
+    }
+    out.currentIdx = currentFoundIdx;
+
+    if (currentFoundIdx >= 0) {
+        const AntigravityAccount& cur = out.accounts[currentFoundIdx];
+        out.primaryPct     = cur.primaryPct;
+        out.secondaryPct   = cur.secondaryPct;
+        out.primaryReset   = cur.primaryReset;
+        out.secondaryReset = cur.secondaryReset;
+    }
+
+    out.primaryWinSec   = 18000;
+    out.secondaryWinSec = 604800;
+    strncpy(out.secondaryTag, "WEEKLY", sizeof(out.secondaryTag) - 1);
     out.valid = true;
+    out.err[0] = '\0';
+    s_agFails = 0;
+    snprintf(s_dbgAgParse, sizeof(s_dbgAgParse), "OK cnt=%d", out.accountCount);
+
+    // 若系统尚未通过 NTP 同步时间，使用 API 携带的时间戳保底校时
+    if (time(nullptr) < 1000000000L) {
+        for (JsonObject a : accArray) {
+            long lastUpdated = a["quota"]["last_updated"] | 0L;
+            if (lastUpdated > 1000000000L) {
+                struct timeval tv = { (time_t)lastUpdated, 0 };
+                settimeofday(&tv, nullptr);
+                break;
+            }
+        }
+    }
 
     time_t t = time(nullptr);
     if (t > 1000000000L) {
@@ -315,87 +320,6 @@ bool Api::fetchAntigravity(const Settings& s, AntigravityData& out) {
         out.hourlyPct[h]   = (uint8_t)(out.primaryPct < 0 ? 0 : out.primaryPct);
         out.hourlyValid[h] = true;
     }
-
-    return true;
-}
-
-// ── Codex fetch ──────────────────────────────────────────────────────────────
-
-bool Api::fetchCodex(const Settings& s, CodexData& out) {
-    if (s.codexToken.isEmpty()) { out.valid = false; return true; }   // not configured ≠ error
-
-    String body; int code;
-    String authVal = "Bearer " + s.codexToken;
-    auto addH = [&](HTTPClient& h){
-        h.addHeader("Authorization", authVal);
-        h.addHeader("Accept",        "application/json");
-        h.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)");
-        h.addHeader("Origin",        "https://chatgpt.com");
-        h.addHeader("Referer",       "https://chatgpt.com/");
-        if (!s.codexDeviceId.isEmpty()) h.addHeader("oai-device-id", s.codexDeviceId);
-    };
-    if (!tlsGet("https://chatgpt.com/backend-api/wham/usage", addH, body, code)) {
-        if (code < 0) {
-            s_codexFails++;
-            if (out.valid && s_codexFails < kMaxSilentFails) {
-                Serial.printf("[codex] transient TLS failure (%d), attempt %d/%d — keeping stale data\n", code, s_codexFails, kMaxSilentFails);
-                return false;
-            }
-        }
-        snprintf(out.err, sizeof(out.err), "HTTP %d", code);
-        out.valid = false;
-        return false;
-    }
-    out.err[0] = '\0';
-    s_codexFails = 0;
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) { snprintf(out.err, sizeof(out.err), "parse"); out.valid=false; return false; }
-    body = String();
-
-    // Codex dropped the 5-hour window (2026-07): the API now returns a single
-    // weekly primary_window and a null secondary_window. Only the primary is
-    // required. When the secondary window is absent, fall back to the first
-    // per-model limit in additional_rate_limits (e.g. Codex-Spark) so the second
-    // row stays meaningful instead of blank.
-    JsonVariant pw = doc["rate_limit"]["primary_window"];
-    if (pw.isNull()) { snprintf(out.err, sizeof(out.err), "no data"); out.valid=false; return false; }
-
-    auto rem = [](float u){ float v = 100.0f - u; if (v<0)v=0; if (v>100)v=100; return v; };
-    out.primaryPct     = rem(pw["used_percent"].as<float>());
-    out.primaryReset   = (time_t)pw["reset_at"].as<long>();
-    out.primaryWinSec  = pw["limit_window_seconds"].as<long>();
-
-    out.secondaryTag[0] = '\0';
-    JsonVariant sw = doc["rate_limit"]["secondary_window"];
-    if (!sw.isNull()) {
-        out.secondaryPct    = rem(sw["used_percent"].as<float>());
-        out.secondaryReset  = (time_t)sw["reset_at"].as<long>();
-        out.secondaryWinSec = sw["limit_window_seconds"].as<long>();
-    } else {
-        out.secondaryPct = -1.0f; out.secondaryReset = 0; out.secondaryWinSec = 0;
-        for (JsonVariant a : doc["additional_rate_limits"].as<JsonArray>()) {
-            JsonVariant apw = a["rate_limit"]["primary_window"];
-            if (apw.isNull()) continue;
-            out.secondaryPct    = rem(apw["used_percent"].as<float>());
-            out.secondaryReset  = (time_t)apw["reset_at"].as<long>();
-            out.secondaryWinSec = apw["limit_window_seconds"].as<long>();
-            // Short tag from the last '-' segment of limit_name, uppercased.
-            const char* ln  = a["limit_name"] | "";
-            const char* seg = strrchr(ln, '-');
-            seg = seg ? seg + 1 : ln;
-            size_t j = 0;
-            for (; seg[j] && j < sizeof(out.secondaryTag) - 1; j++) {
-                char c = seg[j];
-                if (c >= 'a' && c <= 'z') c -= 32;
-                out.secondaryTag[j] = c;
-            }
-            out.secondaryTag[j] = '\0';
-            break;
-        }
-    }
-
-    out.valid = true;
 
     return true;
 }
